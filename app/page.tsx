@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Tab = "workbench" | "graph" | "catalog" | "evaluations";
 
@@ -11,45 +11,46 @@ const tabs: { id: Tab; label: string; glyph: string }[] = [
   { id: "evaluations", label: "Evaluations", glyph: "✓" },
 ];
 
-const facts = [
-  ["Intent", "Book appointment"],
-  ["Patient", "New"],
-  ["Visit", "Dental Cleaning"],
-  ["Provider", "Dr. Wei Lee · preferred"],
-  ["Location", "Richmond · required"],
-  ["Time", "Earliest available"],
-];
+const API_BASE = process.env.NEXT_PUBLIC_SCHEDULING_API_URL ?? "http://127.0.0.1:8000";
+const GOLDEN_UTTERANCE = "I'm a new patient looking for the earliest dental cleaning with Dr. Wei Lee. Richmond is a must.";
 
-const trace = [
-  {
-    label: "Extract",
-    time: "312 ms",
-    title: "6 facts captured",
-    detail: "State patch validated · v1",
-    tone: "success",
-  },
-  {
-    label: "Resolve",
-    time: "0.8 ms",
-    title: "3 entities resolved",
-    detail: "Exact and contextual catalog matches",
-    tone: "success",
-  },
-  {
-    label: "Policies",
-    time: "0.2 ms",
-    title: "1 constraint failed",
-    detail: "Richmond lacks the dental capability",
-    tone: "warning",
-  },
-  {
-    label: "Decision",
-    time: "0.3 ms",
-    title: "Offer a safe alternative",
-    detail: "Mission District · patient permission required",
-    tone: "active",
-  },
-];
+type ApiStatus = "connecting" | "connected" | "offline";
+type Message = { id: string; role: "assistant" | "patient"; text: string; grounded?: boolean };
+type EntityState = { raw_text: string; requirement: "REQUIRED" | "PREFERRED"; priority: number | null } | null;
+type SchedulingStateDto = {
+  conversation_id: string;
+  version: number;
+  active_intents: string[];
+  patient_status: string;
+  referral_status: string;
+  appointment_type: EntityState;
+  provider: EntityState;
+  location: EntityState;
+  time: { objective: string; priority: number | null; timezone: string } | null;
+  selected_candidate_id: string | null;
+  selected_slot_id: string | null;
+  confirmed_state_version: number | null;
+};
+type TraceEvent = { stage: string; latency_ms: number; title: string; detail: string; tone: string };
+type TurnResponse = {
+  conversation_id: string;
+  turn_id: string;
+  turn_number: number;
+  assistant_message: string;
+  state: SchedulingStateDto;
+  state_patch: Record<string, unknown>;
+  trace: TraceEvent[];
+  total_latency_ms: number;
+  extractor_mode: string;
+  offered_slots: { slot_id: string; start: string; duration_min: number }[];
+  booking: { booking_id: string; status: string } | null;
+  engine_result: {
+    decision: { status: string };
+    blockers: { code?: string; kind?: string }[];
+    relaxation_candidates: { location_name: string; requires_patient_permission: boolean }[];
+    next_action: { type: string };
+  };
+};
 
 const graphNodes = [
   {
@@ -101,11 +102,39 @@ function Mark() {
   );
 }
 
+function stateFacts(state: SchedulingStateDto | null): [string, string][] {
+  if (!state) return [
+    ["Intent", "Unknown"],
+    ["Patient", "Unknown"],
+    ["Visit", "Not provided"],
+    ["Provider", "No preference"],
+    ["Location", "No preference"],
+    ["Time", "Not provided"],
+  ];
+  const entity = (value: EntityState, empty: string) => value
+    ? `${value.raw_text} · ${value.requirement.toLocaleLowerCase()}`
+    : empty;
+  return [
+    ["Intent", state.active_intents[0]?.replaceAll("_", " ").toLocaleLowerCase() ?? "Unknown"],
+    ["Patient", state.patient_status.toLocaleLowerCase()],
+    ["Visit", entity(state.appointment_type, "Not provided")],
+    ["Provider", entity(state.provider, "No preference")],
+    ["Location", entity(state.location, "No preference")],
+    ["Time", state.time?.objective.replaceAll("_", " ").toLocaleLowerCase() ?? "Not provided"],
+  ];
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("workbench");
   const [callActive, setCallActive] = useState(false);
   const [composer, setComposer] = useState("");
-  const [demoTurn, setDemoTurn] = useState(0);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [currentTurn, setCurrentTurn] = useState<TurnResponse | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [showJson, setShowJson] = useState(false);
   const [selectedNode, setSelectedNode] = useState("schedule");
   const [nodePrompt, setNodePrompt] = useState(
     "Resolve the caller’s request against the clinic catalog. Never claim eligibility, availability, or booking success unless the scheduling tool returns it.",
@@ -122,11 +151,73 @@ export default function Home() {
     );
   }, [catalogQuery]);
 
+  useEffect(() => {
+    void createConversation();
+    // The initial connection runs once; later reconnects are explicit user actions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function createConversation(initialUtterance?: string) {
+    setApiStatus("connecting");
+    setApiError(null);
+    setCurrentTurn(null);
+    setSubmitting(Boolean(initialUtterance));
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations`, { method: "POST" });
+      if (!response.ok) throw new Error(`API returned ${response.status}`);
+      const created = await response.json() as { conversation_id: string; assistant_message: string };
+      const greeting: Message = { id: `greeting-${created.conversation_id}`, role: "assistant", text: created.assistant_message };
+      setConversationId(created.conversation_id);
+      setMessages([greeting]);
+      setApiStatus("connected");
+      if (initialUtterance) await submitTurn(created.conversation_id, initialUtterance, [greeting]);
+    } catch {
+      setApiStatus("offline");
+      setConversationId(null);
+      setMessages([]);
+      setApiError("The local scheduling API is unavailable. Start it with “make api”, then reconnect.");
+      setSubmitting(false);
+    }
+  }
+
+  async function submitTurn(id: string, utterance: string, baseMessages?: Message[]) {
+    const patientMessage: Message = { id: `patient-${Date.now()}`, role: "patient", text: utterance };
+    if (baseMessages) setMessages([...baseMessages, patientMessage]);
+    else setMessages((existing) => [...existing, patientMessage]);
+    setSubmitting(true);
+    setApiError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/conversations/${id}/turns`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ utterance }),
+      });
+      if (!response.ok) throw new Error(`API returned ${response.status}`);
+      const turn = await response.json() as TurnResponse;
+      const assistantMessage: Message = {
+        id: turn.turn_id,
+        role: "assistant",
+        text: turn.assistant_message,
+        grounded: true,
+      };
+      if (baseMessages) setMessages([...baseMessages, patientMessage, assistantMessage]);
+      else setMessages((existing) => [...existing, assistantMessage]);
+      setCurrentTurn(turn);
+      setApiStatus("connected");
+    } catch {
+      setApiStatus("offline");
+      setApiError("That turn could not reach the scheduling API. Your message was not processed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function sendMessage(event: FormEvent) {
     event.preventDefault();
-    if (!composer.trim()) return;
-    setDemoTurn((turn) => Math.min(turn + 1, 2));
+    const utterance = composer.trim();
+    if (!utterance || !conversationId || submitting) return;
     setComposer("");
+    void submitTurn(conversationId, utterance);
   }
 
   return (
@@ -183,8 +274,8 @@ export default function Home() {
             </div>
           </div>
           <div className="top-actions">
-            <span className="demo-badge"><i /> Frontend demo</span>
-            <button className="secondary-button" type="button">Preview JSON</button>
+            <span className={`demo-badge api-${apiStatus}`}><i /> {apiStatus === "connected" ? "Local API connected" : apiStatus === "offline" ? "API offline" : "Connecting"}</span>
+            <button className="secondary-button" type="button" onClick={() => setShowJson(true)} disabled={!currentTurn}>Preview JSON</button>
             <button className="primary-button" type="button" onClick={() => setCallActive(true)}>
               <span aria-hidden="true">◉</span> Test agent
             </button>
@@ -195,11 +286,17 @@ export default function Home() {
           <Workbench
             callActive={callActive}
             composer={composer}
-            demoTurn={demoTurn}
+            apiError={apiError}
+            apiStatus={apiStatus}
+            currentTurn={currentTurn}
+            messages={messages}
             onComposerChange={setComposer}
             onEndCall={() => setCallActive(false)}
-            onRunDemo={() => setDemoTurn((turn) => (turn + 1) % 3)}
+            onReconnect={() => void createConversation()}
+            onRunDemo={() => void createConversation(GOLDEN_UTTERANCE)}
             onSend={sendMessage}
+            onStartCall={() => setCallActive(true)}
+            submitting={submitting}
           />
         )}
         {activeTab === "graph" && (
@@ -231,7 +328,7 @@ export default function Home() {
           <div className="call-pulse"><span /></div>
           <div>
             <strong>Test call in progress</strong>
-            <span>Listening through browser microphone</span>
+            <span>Voice transport remains mocked in this slice</span>
           </div>
           <div className="waveform" aria-hidden="true">
             {Array.from({ length: 12 }).map((_, index) => <i key={index} />)}
@@ -239,38 +336,62 @@ export default function Home() {
           <button type="button" onClick={() => setCallActive(false)}>End call</button>
         </div>
       )}
+      {showJson && currentTurn && (
+        <div className="modal-backdrop">
+          <button className="modal-dismiss" aria-label="Close JSON preview" type="button" onClick={() => setShowJson(false)} />
+          <section className="json-modal" role="dialog" aria-modal="true" aria-labelledby="json-title">
+            <header><div><span>TURN PAYLOAD</span><h2 id="json-title">Checked backend response</h2></div><button aria-label="Close JSON preview" type="button" onClick={() => setShowJson(false)}>×</button></header>
+            <pre>{JSON.stringify(currentTurn, null, 2)}</pre>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
 
 function Workbench({
+  apiError,
+  apiStatus,
   callActive,
   composer,
-  demoTurn,
+  currentTurn,
+  messages,
   onComposerChange,
   onEndCall,
+  onReconnect,
   onRunDemo,
   onSend,
+  onStartCall,
+  submitting,
 }: {
+  apiError: string | null;
+  apiStatus: ApiStatus;
   callActive: boolean;
   composer: string;
-  demoTurn: number;
+  currentTurn: TurnResponse | null;
+  messages: Message[];
   onComposerChange: (value: string) => void;
   onEndCall: () => void;
+  onReconnect: () => void;
   onRunDemo: () => void;
   onSend: (event: FormEvent) => void;
+  onStartCall: () => void;
+  submitting: boolean;
 }) {
+  const facts = stateFacts(currentTurn?.state ?? null);
+  const trace = currentTurn?.trace ?? [];
+  const decision = currentTurn?.engine_result.decision.status;
   return (
     <div className="page workbench-page">
       <section className="page-intro">
         <div>
           <span className="eyebrow">LIVE DEBUGGING</span>
           <h2>See every scheduling decision.</h2>
-          <p>Talk to the agent, inspect what it understood, and verify every policy before a booking is made.</p>
+          <p>Send real text turns through the local scheduler, inspect what it understood, and verify every policy before a booking is made.</p>
         </div>
-        <button className="scenario-button" type="button" onClick={onRunDemo}>
+        <button className="scenario-button" type="button" onClick={onRunDemo} disabled={submitting}>
           <span>▶</span>
-          <div><strong>Run golden scenario</strong><small>Dental · hard location constraint</small></div>
+          <div><strong>{submitting ? "Running scenario…" : "Run golden scenario"}</strong><small>Dental · hard location constraint</small></div>
         </button>
       </section>
 
@@ -279,95 +400,85 @@ function Workbench({
           <div className="panel-header">
             <div>
               <span className="panel-icon">◌</span>
-              <div><h3>Conversation</h3><p>Text fallback · browser voice ready</p></div>
+              <div><h3>Conversation</h3><p>Live text API · voice integration pending</p></div>
             </div>
-            <span className="mode-pill"><i /> DEMO DATA</span>
+            <span className={`mode-pill api-${apiStatus}`}><i /> {apiStatus === "connected" ? "LIVE LOCAL API" : apiStatus === "offline" ? "BACKEND OFFLINE" : "CONNECTING"}</span>
           </div>
 
           <div className="transcript">
-            <div className="time-divider"><span>10:42 AM</span></div>
-            <div className="message assistant-message">
-              <div className="message-avatar"><Mark /></div>
-              <div>
-                <span className="speaker">PROSPER SCHEDULER</span>
-                <p>Hi, I’m the clinic’s scheduling assistant. How can I help today?</p>
+            <div className="time-divider"><span>{apiStatus === "connected" ? "CURRENT SESSION" : "LOCAL DEVELOPMENT"}</span></div>
+            {apiError && (
+              <div className="api-error" role="alert">
+                <div><strong>Scheduling API unavailable</strong><p>{apiError}</p></div>
+                <button type="button" onClick={onReconnect}>Reconnect</button>
               </div>
-            </div>
-            <div className="message patient-message">
-              <div>
-                <span className="speaker">PATIENT</span>
-                <p>I’m a new patient looking for the earliest dental cleaning with Dr. Wei Lee. Richmond is a must.</p>
+            )}
+            {!messages.length && apiStatus === "connecting" && (
+              <div className="conversation-empty"><span>◌</span><strong>Opening a local conversation…</strong></div>
+            )}
+            {messages.map((message) => message.role === "assistant" ? (
+              <div className={`message assistant-message new-message ${message.grounded ? "highlighted" : ""}`} key={message.id}>
+                <div className="message-avatar"><Mark /></div>
+                <div>
+                  <span className="speaker">PROSPER SCHEDULER</span>
+                  <p>{message.text}</p>
+                  {message.grounded && <span className="grounded-label">✓ Grounded in checked backend result</span>}
+                </div>
               </div>
-              <div className="patient-avatar">AM</div>
-            </div>
-            <div className="message assistant-message highlighted">
-              <div className="message-avatar"><Mark /></div>
-              <div>
-                <span className="speaker">PROSPER SCHEDULER</span>
-                <p>Dr. Lee can do dental cleanings, but the Richmond center isn’t equipped for dental care. I can check the Mission District clinic instead—would that work?</p>
-                <span className="grounded-label">✓ Grounded in checked result</span>
-              </div>
-            </div>
-            {demoTurn > 0 && (
-              <div className="message patient-message new-message">
-                <div><span className="speaker">PATIENT</span><p>Yes, Mission District works.</p></div>
+            ) : (
+              <div className="message patient-message new-message" key={message.id}>
+                <div><span className="speaker">PATIENT</span><p>{message.text}</p></div>
                 <div className="patient-avatar">AM</div>
               </div>
-            )}
-            {demoTurn > 1 && (
-              <div className="message assistant-message new-message">
-                <div className="message-avatar"><Mark /></div>
-                <div><span className="speaker">PROSPER SCHEDULER</span><p>The earliest opening is Thursday, August 20 at 10:30 AM. Would you like me to reserve it?</p></div>
-              </div>
-            )}
+            ))}
+            {submitting && <div className="processing-row"><i /><i /><i /><span>Running deterministic checks</span></div>}
           </div>
 
           <form className="composer" onSubmit={onSend}>
-            <button aria-label={callActive ? "End voice call" : "Start voice call"} className={callActive ? "mic-button listening" : "mic-button"} type="button" onClick={callActive ? onEndCall : onRunDemo}>◉</button>
-            <input aria-label="Patient message" value={composer} onChange={(event) => onComposerChange(event.target.value)} placeholder="Type a patient message…" />
-            <span>Demo mode</span>
-            <button aria-label="Send message" className="send-button" type="submit">↑</button>
+            <button aria-label={callActive ? "End mocked voice call" : "Open mocked voice call"} className={callActive ? "mic-button listening" : "mic-button"} type="button" onClick={callActive ? onEndCall : onStartCall}>◉</button>
+            <input aria-label="Patient message" value={composer} onChange={(event) => onComposerChange(event.target.value)} placeholder={apiStatus === "connected" ? "Type a patient message…" : "Connect the local API to send messages"} disabled={apiStatus !== "connected" || submitting} />
+            <span>{submitting ? "Checking…" : "Local rules"}</span>
+            <button aria-label="Send message" className="send-button" type="submit" disabled={apiStatus !== "connected" || submitting || !composer.trim()}>↑</button>
           </form>
         </section>
 
         <div className="inspector-stack">
           <section className="panel decision-panel">
             <div className="panel-header compact">
-              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>Turn 1 · 314 ms total</p></div></div>
+              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>{currentTurn ? `Turn ${currentTurn.turn_number} · ${currentTurn.total_latency_ms} ms total` : "Waiting for a processed turn"}</p></div></div>
               <button aria-label="More decision options" type="button">•••</button>
             </div>
             <div className="trace-list">
               {trace.map((item, index) => (
-                <div className={`trace-row ${item.tone}`} key={item.label}>
+                <div className={`trace-row ${item.tone}`} key={`${item.stage}-${index}`}>
                   <div className="trace-rail"><span>{item.tone === "warning" ? "!" : "✓"}</span>{index < trace.length - 1 && <i />}</div>
                   <div className="trace-copy">
-                    <div><b>{item.label}</b><time>{item.time}</time></div>
+                    <div><b>{item.stage}</b><time>{item.latency_ms} ms</time></div>
                     <strong>{item.title}</strong>
                     <p>{item.detail}</p>
                   </div>
                 </div>
               ))}
+              {!trace.length && <div className="trace-empty"><span>↳</span><p>Send a scheduling request to see extraction, resolution, policy, and decision stages.</p></div>}
             </div>
-            <div className="decision-callout">
-              <div><span>!</span><strong>Hard constraint preserved</strong></div>
-              <p>Mission District is an alternative, not a valid match, until the patient agrees.</p>
-            </div>
+            {decision === "NO_EXACT_MATCH" && <div className="decision-callout"><div><span>!</span><strong>Hard constraint preserved</strong></div><p>The alternative remains separate until the patient explicitly agrees.</p></div>}
+            {currentTurn?.booking && <div className="booking-callout"><div><span>✓</span><strong>Booking confirmed</strong></div><p>{currentTurn.booking.booking_id} · idempotent mock write</p></div>}
           </section>
 
           <section className="panel state-panel">
-            <div className="panel-title-row"><div><span className="panel-icon">◇</span><h3>Canonical state</h3></div><span>VERSION 1</span></div>
+            <div className="panel-title-row"><div><span className="panel-icon">◇</span><h3>Canonical state</h3></div><span>VERSION {currentTurn?.state.version ?? 0}</span></div>
             <div className="fact-grid">
               {facts.map(([label, value]) => <div className="fact" key={label}><span>{label}</span><strong>{value}</strong></div>)}
             </div>
           </section>
 
           <section className="panel usage-panel">
-            <div className="panel-title-row"><div><span className="panel-icon">↗</span><h3>Context efficiency</h3></div><span>THIS TURN</span></div>
+            <div className="panel-title-row"><div><span className="panel-icon">↗</span><h3>Context usage</h3></div><span>{currentTurn?.extractor_mode.replaceAll("_", " ") ?? "NO TURN"}</span></div>
             <div className="usage-comparison">
-              <div><span>Structured approach</span><strong>684 <small>tokens</small></strong><i><b style={{ width: "18%" }} /></i></div>
-              <div className="baseline"><span>Full catalog baseline</span><strong>~11.4k <small>tokens</small></strong><i><b style={{ width: "100%" }} /></i></div>
+              <div><span>Current extraction</span><strong>0 <small>LLM tokens</small></strong><i><b style={{ width: currentTurn ? "4%" : "0%" }} /></i></div>
+              <div className="baseline"><span>Full catalog baseline</span><strong>— <small>not measured</small></strong><i><b style={{ width: "0%" }} /></i></div>
             </div>
-            <p className="estimate-note">Illustrative frontend values · real usage arrives with backend telemetry.</p>
+            <p className="estimate-note">This slice uses the deterministic local extractor. Model cost telemetry will appear when structured LLM extraction is added.</p>
           </section>
         </div>
       </div>
