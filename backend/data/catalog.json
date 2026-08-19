@@ -1,0 +1,2047 @@
+{
+  "policies": [
+    "A provider can only be booked at a location listed in their location_ids.",
+    "A provider can only be booked for an appointment type listed in their appointment_type_ids.",
+    "An appointment type with a required_capability can only be booked at a location whose capabilities include that capability (e.g. MRI/X-Ray/CT need 'imaging').",
+    "Appointment types with requires_referral = true need a referral on file before booking.",
+    "A new patient may only book appointment types where new_patients_allowed = true, and only with providers where accepting_new_patients = true.",
+    "When the caller names a provider who practices at multiple locations, the location must be disambiguated before booking."
+  ],
+  "locations": [
+    {
+      "id": "loc_000",
+      "name": "Mission Bay Health Center",
+      "address": "4874 Main St",
+      "city": "San Francisco",
+      "phone": "(415) 555-9313",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "lab",
+        "physical_therapy",
+        "surgery"
+      ]
+    },
+    {
+      "id": "loc_001",
+      "name": "Mission District Family Clinic",
+      "address": "4732 Market St",
+      "city": "San Francisco",
+      "phone": "(415) 555-4657",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "imaging",
+        "lab",
+        "physical_therapy",
+        "dental"
+      ]
+    },
+    {
+      "id": "loc_002",
+      "name": "North Beach Specialty Center",
+      "address": "481 Mission St",
+      "city": "San Francisco",
+      "phone": "(415) 555-3181",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": []
+    },
+    {
+      "id": "loc_003",
+      "name": "North Gate Health Center",
+      "address": "944 Bryant St",
+      "city": "San Francisco",
+      "phone": "(415) 555-4078",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": []
+    },
+    {
+      "id": "loc_004",
+      "name": "Downtown Health Center",
+      "address": "4455 Geary Blvd",
+      "city": "San Francisco",
+      "phone": "(415) 555-6146",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "imaging"
+      ]
+    },
+    {
+      "id": "loc_005",
+      "name": "Midtown Medical Group",
+      "address": "2099 Market St",
+      "city": "San Francisco",
+      "phone": "(415) 555-5919",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "lab",
+        "imaging"
+      ]
+    },
+    {
+      "id": "loc_006",
+      "name": "Sunset Community Clinic",
+      "address": "4293 Geary Blvd",
+      "city": "San Francisco",
+      "phone": "(415) 555-3702",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "lab",
+        "surgery"
+      ]
+    },
+    {
+      "id": "loc_007",
+      "name": "Richmond Care Center",
+      "address": "4671 Bryant St",
+      "city": "San Francisco",
+      "phone": "(415) 555-6140",
+      "hours": "Mon-Fri 8:00-17:00",
+      "capabilities": [
+        "surgery"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "prov_000",
+      "name": "Dr. David Chen",
+      "title": "MD",
+      "specialty": "Cardiology",
+      "location_ids": [
+        "loc_000",
+        "loc_001",
+        "loc_004",
+        "loc_007"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_020",
+        "appt_021",
+        "appt_022",
+        "appt_023",
+        "appt_024",
+        "appt_025"
+      ]
+    },
+    {
+      "id": "prov_001",
+      "name": "Dr. Daniel Chen",
+      "title": "MD",
+      "specialty": "Dermatology",
+      "location_ids": [
+        "loc_004",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_026",
+        "appt_027",
+        "appt_028",
+        "appt_029",
+        "appt_030",
+        "appt_031"
+      ]
+    },
+    {
+      "id": "prov_002",
+      "name": "Dr. Maria Garcia",
+      "title": "MD",
+      "specialty": "Pediatrics",
+      "location_ids": [
+        "loc_000"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_015",
+        "appt_016",
+        "appt_017",
+        "appt_018",
+        "appt_019"
+      ]
+    },
+    {
+      "id": "prov_003",
+      "name": "Dr. Maria Garcia",
+      "title": "NP",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_002",
+        "loc_005",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_004",
+      "name": "Dr. Wei Chen",
+      "title": "DO",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_000",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_005",
+      "name": "Dr. Linda Ramirez",
+      "title": "MD",
+      "specialty": "Cardiology",
+      "location_ids": [
+        "loc_002",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Hindi"
+      ],
+      "appointment_type_ids": [
+        "appt_020",
+        "appt_021",
+        "appt_022",
+        "appt_023",
+        "appt_024",
+        "appt_025"
+      ]
+    },
+    {
+      "id": "prov_006",
+      "name": "Dr. Fatima Smith",
+      "title": "MD",
+      "specialty": "Psychiatry",
+      "location_ids": [
+        "loc_001",
+        "loc_004"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_059",
+        "appt_060",
+        "appt_061"
+      ]
+    },
+    {
+      "id": "prov_007",
+      "name": "Dr. Sofia Patel",
+      "title": "DO",
+      "specialty": "Neurology",
+      "location_ids": [
+        "loc_001",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_036",
+        "appt_037",
+        "appt_038",
+        "appt_039"
+      ]
+    },
+    {
+      "id": "prov_008",
+      "name": "Dr. Carlos Garcia",
+      "title": "MD",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_002",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_009",
+      "name": "Dr. Tomas Hernandez",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_000"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_010",
+      "name": "Dr. Grace Rodriguez",
+      "title": "DO",
+      "specialty": "Orthopedics",
+      "location_ids": [
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_032",
+        "appt_033",
+        "appt_034",
+        "appt_035"
+      ]
+    },
+    {
+      "id": "prov_011",
+      "name": "Dr. Wei Smith",
+      "title": "MD",
+      "specialty": "Psychiatry",
+      "location_ids": [
+        "loc_001"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_059",
+        "appt_060",
+        "appt_061"
+      ]
+    },
+    {
+      "id": "prov_012",
+      "name": "Dr. Michael Chen",
+      "title": "NP",
+      "specialty": "Pediatrics",
+      "location_ids": [
+        "loc_001",
+        "loc_002",
+        "loc_004"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_015",
+        "appt_016",
+        "appt_017",
+        "appt_018",
+        "appt_019"
+      ]
+    },
+    {
+      "id": "prov_013",
+      "name": "Dr. Priya Williams",
+      "title": "DO",
+      "specialty": "Pediatrics",
+      "location_ids": [
+        "loc_004",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_015",
+        "appt_016",
+        "appt_017",
+        "appt_018",
+        "appt_019"
+      ]
+    },
+    {
+      "id": "prov_014",
+      "name": "Dr. Linda Ramirez",
+      "title": "DO",
+      "specialty": "Radiology",
+      "location_ids": [
+        "loc_000",
+        "loc_004"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_062",
+        "appt_063",
+        "appt_064",
+        "appt_065",
+        "appt_066",
+        "appt_067",
+        "appt_068",
+        "appt_069"
+      ]
+    },
+    {
+      "id": "prov_015",
+      "name": "Dr. Hannah Nguyen",
+      "title": "MD",
+      "specialty": "Radiology",
+      "location_ids": [
+        "loc_000",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_062",
+        "appt_063",
+        "appt_064",
+        "appt_065",
+        "appt_066",
+        "appt_067",
+        "appt_068",
+        "appt_069"
+      ]
+    },
+    {
+      "id": "prov_016",
+      "name": "Dr. Nina Nguyen",
+      "title": "PA",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_000",
+        "loc_004",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_017",
+      "name": "Dr. Olivia Singh",
+      "title": "MD",
+      "specialty": "Neurology",
+      "location_ids": [
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_036",
+        "appt_037",
+        "appt_038",
+        "appt_039"
+      ]
+    },
+    {
+      "id": "prov_018",
+      "name": "Dr. Wei Lee",
+      "title": "DO",
+      "specialty": "Dental",
+      "location_ids": [
+        "loc_001",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_074",
+        "appt_075",
+        "appt_076"
+      ]
+    },
+    {
+      "id": "prov_019",
+      "name": "Dr. Maria Martinez",
+      "title": "DO",
+      "specialty": "ENT",
+      "location_ids": [
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_050",
+        "appt_051",
+        "appt_052"
+      ]
+    },
+    {
+      "id": "prov_020",
+      "name": "Dr. Lucas Singh",
+      "title": "MD",
+      "specialty": "Dental",
+      "location_ids": [
+        "loc_001",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_074",
+        "appt_075",
+        "appt_076"
+      ]
+    },
+    {
+      "id": "prov_021",
+      "name": "Dr. Priya Ramirez",
+      "title": "NP",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_005",
+        "loc_006"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_022",
+      "name": "Dr. Linda Rodriguez",
+      "title": "PA",
+      "specialty": "Allergy/Immunology",
+      "location_ids": [
+        "loc_002",
+        "loc_003"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_080",
+        "appt_081"
+      ]
+    },
+    {
+      "id": "prov_023",
+      "name": "Dr. Jennifer Nguyen",
+      "title": "DO",
+      "specialty": "Pulmonology",
+      "location_ids": [
+        "loc_001",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_078",
+        "appt_079"
+      ]
+    },
+    {
+      "id": "prov_024",
+      "name": "Dr. Maria Nguyen",
+      "title": "NP",
+      "specialty": "Pulmonology",
+      "location_ids": [
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_078",
+        "appt_079"
+      ]
+    },
+    {
+      "id": "prov_025",
+      "name": "Dr. Patricia Hernandez",
+      "title": "NP",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_000"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_026",
+      "name": "Dr. Michael Sato",
+      "title": "PA",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_003",
+        "loc_006"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_027",
+      "name": "Dr. Kenji Kim",
+      "title": "MD",
+      "specialty": "Dermatology",
+      "location_ids": [
+        "loc_002",
+        "loc_004",
+        "loc_005",
+        "loc_006"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_026",
+        "appt_027",
+        "appt_028",
+        "appt_029",
+        "appt_030",
+        "appt_031"
+      ]
+    },
+    {
+      "id": "prov_028",
+      "name": "Dr. Daniel Nguyen",
+      "title": "MD",
+      "specialty": "Pulmonology",
+      "location_ids": [
+        "loc_004",
+        "loc_006",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_078",
+        "appt_079"
+      ]
+    },
+    {
+      "id": "prov_029",
+      "name": "Dr. Olivia Sato",
+      "title": "MD",
+      "specialty": "Psychiatry",
+      "location_ids": [
+        "loc_000"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_059",
+        "appt_060",
+        "appt_061"
+      ]
+    },
+    {
+      "id": "prov_030",
+      "name": "Dr. Elizabeth Nguyen",
+      "title": "DO",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_000",
+        "loc_002",
+        "loc_005"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_031",
+      "name": "Dr. Andre Patel",
+      "title": "NP",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_032",
+      "name": "Dr. Michael Sato",
+      "title": "DO",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_033",
+      "name": "Dr. Samuel Kim",
+      "title": "PA",
+      "specialty": "Endocrinology",
+      "location_ids": [
+        "loc_004",
+        "loc_007"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_056",
+        "appt_057",
+        "appt_058"
+      ]
+    },
+    {
+      "id": "prov_034",
+      "name": "Dr. Olivia Martinez",
+      "title": "NP",
+      "specialty": "Allergy/Immunology",
+      "location_ids": [
+        "loc_002",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Hindi"
+      ],
+      "appointment_type_ids": [
+        "appt_080",
+        "appt_081"
+      ]
+    },
+    {
+      "id": "prov_035",
+      "name": "Dr. Daniel Smith",
+      "title": "PA",
+      "specialty": "Dermatology",
+      "location_ids": [
+        "loc_001",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_026",
+        "appt_027",
+        "appt_028",
+        "appt_029",
+        "appt_030",
+        "appt_031"
+      ]
+    },
+    {
+      "id": "prov_036",
+      "name": "Dr. Linda Nguyen",
+      "title": "PA",
+      "specialty": "OB/GYN",
+      "location_ids": [
+        "loc_004"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Hindi"
+      ],
+      "appointment_type_ids": [
+        "appt_040",
+        "appt_041",
+        "appt_042",
+        "appt_043",
+        "appt_044"
+      ]
+    },
+    {
+      "id": "prov_037",
+      "name": "Dr. Carlos Nguyen",
+      "title": "MD",
+      "specialty": "Orthopedics",
+      "location_ids": [
+        "loc_002",
+        "loc_005"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_032",
+        "appt_033",
+        "appt_034",
+        "appt_035"
+      ]
+    },
+    {
+      "id": "prov_038",
+      "name": "Dr. Leila Sato",
+      "title": "DO",
+      "specialty": "Lab",
+      "location_ids": [
+        "loc_000",
+        "loc_002",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Arabic"
+      ],
+      "appointment_type_ids": [
+        "appt_072",
+        "appt_073"
+      ]
+    },
+    {
+      "id": "prov_039",
+      "name": "Dr. Nina Chen",
+      "title": "MD",
+      "specialty": "Pulmonology",
+      "location_ids": [
+        "loc_000",
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_078",
+        "appt_079"
+      ]
+    },
+    {
+      "id": "prov_040",
+      "name": "Dr. Omar Sato",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_001"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_041",
+      "name": "Dr. David Johnson",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_003",
+        "loc_004"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_042",
+      "name": "Dr. Fatima Patel",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_000",
+        "loc_006"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Hindi"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_043",
+      "name": "Dr. Sarah Martinez",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_001",
+        "loc_004"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_044",
+      "name": "Dr. Kenji Patel",
+      "title": "DO",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_002",
+        "loc_006"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_045",
+      "name": "Dr. Olivia Patel",
+      "title": "MD",
+      "specialty": "Internal Medicine",
+      "location_ids": [
+        "loc_004"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_014"
+      ]
+    },
+    {
+      "id": "prov_046",
+      "name": "Dr. Emily Chen",
+      "title": "MD",
+      "specialty": "Cardiology",
+      "location_ids": [
+        "loc_004",
+        "loc_007"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Mandarin"
+      ],
+      "appointment_type_ids": [
+        "appt_020",
+        "appt_021",
+        "appt_022",
+        "appt_023",
+        "appt_024",
+        "appt_025"
+      ]
+    },
+    {
+      "id": "prov_047",
+      "name": "Dr. Lucas Chen",
+      "title": "MD",
+      "specialty": "Family Medicine",
+      "location_ids": [
+        "loc_000"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Vietnamese"
+      ],
+      "appointment_type_ids": [
+        "appt_000",
+        "appt_001",
+        "appt_002",
+        "appt_003",
+        "appt_004",
+        "appt_005",
+        "appt_006",
+        "appt_007",
+        "appt_008",
+        "appt_009",
+        "appt_010",
+        "appt_011",
+        "appt_012",
+        "appt_013"
+      ]
+    },
+    {
+      "id": "prov_048",
+      "name": "Dr. Wei Sato",
+      "title": "DO",
+      "specialty": "Dermatology",
+      "location_ids": [
+        "loc_000",
+        "loc_001",
+        "loc_005"
+      ],
+      "accepting_new_patients": false,
+      "languages": [
+        "English",
+        "Hindi"
+      ],
+      "appointment_type_ids": [
+        "appt_026",
+        "appt_027",
+        "appt_028",
+        "appt_029",
+        "appt_030",
+        "appt_031"
+      ]
+    },
+    {
+      "id": "prov_049",
+      "name": "Dr. Fatima Hernandez",
+      "title": "DO",
+      "specialty": "Gastroenterology",
+      "location_ids": [
+        "loc_003"
+      ],
+      "accepting_new_patients": true,
+      "languages": [
+        "English",
+        "Spanish",
+        "Portuguese"
+      ],
+      "appointment_type_ids": [
+        "appt_053",
+        "appt_054",
+        "appt_055"
+      ]
+    }
+  ],
+  "appointment_types": [
+    {
+      "id": "appt_000",
+      "name": "New Patient Consultation",
+      "specialty": "General",
+      "duration_min": 40,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_001",
+      "name": "New Patient Visit",
+      "specialty": "General",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_002",
+      "name": "Annual Physical",
+      "specialty": "Family Medicine",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_003",
+      "name": "Annual Wellness Visit",
+      "specialty": "Internal Medicine",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_004",
+      "name": "Follow-up Visit",
+      "specialty": "General",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_005",
+      "name": "Follow-up Consultation",
+      "specialty": "General",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_006",
+      "name": "Telehealth Follow-up",
+      "specialty": "General",
+      "duration_min": 15,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_007",
+      "name": "Sick Visit",
+      "specialty": "Family Medicine",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_008",
+      "name": "Urgent Care Visit",
+      "specialty": "Family Medicine",
+      "duration_min": 25,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_009",
+      "name": "Medication Review",
+      "specialty": "General",
+      "duration_min": 15,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_010",
+      "name": "Vaccination / Immunization",
+      "specialty": "Family Medicine",
+      "duration_min": 10,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_011",
+      "name": "Flu Shot",
+      "specialty": "Family Medicine",
+      "duration_min": 10,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_012",
+      "name": "COVID-19 Vaccine",
+      "specialty": "Family Medicine",
+      "duration_min": 10,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_013",
+      "name": "Travel Vaccination Consult",
+      "specialty": "Family Medicine",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_014",
+      "name": "Pre-operative Evaluation",
+      "specialty": "Internal Medicine",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_015",
+      "name": "Well-Child Visit",
+      "specialty": "Pediatrics",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_016",
+      "name": "Newborn Visit",
+      "specialty": "Pediatrics",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_017",
+      "name": "Pediatric Sick Visit",
+      "specialty": "Pediatrics",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_018",
+      "name": "School Physical",
+      "specialty": "Pediatrics",
+      "duration_min": 25,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_019",
+      "name": "Sports Physical",
+      "specialty": "Pediatrics",
+      "duration_min": 25,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_020",
+      "name": "Cardiology Consultation",
+      "specialty": "Cardiology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_021",
+      "name": "Echocardiogram",
+      "specialty": "Cardiology",
+      "duration_min": 45,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_022",
+      "name": "Stress Test",
+      "specialty": "Cardiology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_023",
+      "name": "EKG / Electrocardiogram",
+      "specialty": "Cardiology",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_024",
+      "name": "Holter Monitor Fitting",
+      "specialty": "Cardiology",
+      "duration_min": 20,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_025",
+      "name": "Pacemaker Check",
+      "specialty": "Cardiology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_026",
+      "name": "Dermatology Consultation",
+      "specialty": "Dermatology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_027",
+      "name": "Skin Cancer Screening",
+      "specialty": "Dermatology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_028",
+      "name": "Full Body Skin Exam",
+      "specialty": "Dermatology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_029",
+      "name": "Mole Removal",
+      "specialty": "Dermatology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "surgery"
+    },
+    {
+      "id": "appt_030",
+      "name": "Acne Follow-up",
+      "specialty": "Dermatology",
+      "duration_min": 15,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_031",
+      "name": "Cosmetic Consultation",
+      "specialty": "Dermatology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_032",
+      "name": "Orthopedic Consultation",
+      "specialty": "Orthopedics",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_033",
+      "name": "Joint Injection",
+      "specialty": "Orthopedics",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_034",
+      "name": "Fracture Follow-up",
+      "specialty": "Orthopedics",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_035",
+      "name": "Pre-surgical Consultation",
+      "specialty": "Orthopedics",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_036",
+      "name": "Neurology Consultation",
+      "specialty": "Neurology",
+      "duration_min": 45,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_037",
+      "name": "EEG",
+      "specialty": "Neurology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_038",
+      "name": "Headache Follow-up",
+      "specialty": "Neurology",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_039",
+      "name": "Memory Evaluation",
+      "specialty": "Neurology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_040",
+      "name": "OB/GYN New Patient Visit",
+      "specialty": "OB/GYN",
+      "duration_min": 40,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_041",
+      "name": "Annual Well-Woman Exam",
+      "specialty": "OB/GYN",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_042",
+      "name": "Prenatal Visit",
+      "specialty": "OB/GYN",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_043",
+      "name": "Pap Smear",
+      "specialty": "OB/GYN",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_044",
+      "name": "Contraception Consultation",
+      "specialty": "OB/GYN",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_045",
+      "name": "Eye Exam",
+      "specialty": "Ophthalmology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_046",
+      "name": "Comprehensive Eye Exam",
+      "specialty": "Ophthalmology",
+      "duration_min": 45,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_047",
+      "name": "Glaucoma Screening",
+      "specialty": "Ophthalmology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_048",
+      "name": "Contact Lens Fitting",
+      "specialty": "Ophthalmology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_049",
+      "name": "Cataract Evaluation",
+      "specialty": "Ophthalmology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_050",
+      "name": "ENT Consultation",
+      "specialty": "ENT",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_051",
+      "name": "Hearing Test / Audiogram",
+      "specialty": "ENT",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_052",
+      "name": "Sinus Evaluation",
+      "specialty": "ENT",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_053",
+      "name": "GI Consultation",
+      "specialty": "Gastroenterology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_054",
+      "name": "Colonoscopy Consultation",
+      "specialty": "Gastroenterology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_055",
+      "name": "Endoscopy Consultation",
+      "specialty": "Gastroenterology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_056",
+      "name": "Endocrinology Consultation",
+      "specialty": "Endocrinology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_057",
+      "name": "Diabetes Management",
+      "specialty": "Endocrinology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_058",
+      "name": "Thyroid Follow-up",
+      "specialty": "Endocrinology",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_059",
+      "name": "Psychiatric Evaluation",
+      "specialty": "Psychiatry",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_060",
+      "name": "Therapy Session",
+      "specialty": "Psychiatry",
+      "duration_min": 50,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_061",
+      "name": "Medication Management",
+      "specialty": "Psychiatry",
+      "duration_min": 20,
+      "requires_referral": false,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_062",
+      "name": "X-Ray",
+      "specialty": "Radiology",
+      "duration_min": 20,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_063",
+      "name": "MRI - Brain",
+      "specialty": "Radiology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_064",
+      "name": "MRI - Spine",
+      "specialty": "Radiology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_065",
+      "name": "MRI - Knee",
+      "specialty": "Radiology",
+      "duration_min": 45,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_066",
+      "name": "CT Scan",
+      "specialty": "Radiology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_067",
+      "name": "Ultrasound",
+      "specialty": "Radiology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_068",
+      "name": "Mammogram",
+      "specialty": "Radiology",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_069",
+      "name": "Bone Density Scan (DEXA)",
+      "specialty": "Radiology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false,
+      "required_capability": "imaging"
+    },
+    {
+      "id": "appt_070",
+      "name": "Physical Therapy Evaluation",
+      "specialty": "Physical Therapy",
+      "duration_min": 45,
+      "requires_referral": true,
+      "new_patients_allowed": true,
+      "required_capability": "physical_therapy"
+    },
+    {
+      "id": "appt_071",
+      "name": "Physical Therapy Session",
+      "specialty": "Physical Therapy",
+      "duration_min": 45,
+      "requires_referral": false,
+      "new_patients_allowed": false,
+      "required_capability": "physical_therapy"
+    },
+    {
+      "id": "appt_072",
+      "name": "Blood Draw / Lab Work",
+      "specialty": "Lab",
+      "duration_min": 15,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "lab"
+    },
+    {
+      "id": "appt_073",
+      "name": "Fasting Blood Test",
+      "specialty": "Lab",
+      "duration_min": 15,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "lab"
+    },
+    {
+      "id": "appt_074",
+      "name": "Dental Cleaning",
+      "specialty": "Dental",
+      "duration_min": 45,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "dental"
+    },
+    {
+      "id": "appt_075",
+      "name": "Dental Exam",
+      "specialty": "Dental",
+      "duration_min": 30,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "dental"
+    },
+    {
+      "id": "appt_076",
+      "name": "Dental New Patient Exam",
+      "specialty": "Dental",
+      "duration_min": 60,
+      "requires_referral": false,
+      "new_patients_allowed": true,
+      "required_capability": "dental"
+    },
+    {
+      "id": "appt_077",
+      "name": "Urology Consultation",
+      "specialty": "Urology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_078",
+      "name": "Pulmonology Consultation",
+      "specialty": "Pulmonology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_079",
+      "name": "Spirometry / Lung Function Test",
+      "specialty": "Pulmonology",
+      "duration_min": 30,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    },
+    {
+      "id": "appt_080",
+      "name": "Allergy Consultation",
+      "specialty": "Allergy/Immunology",
+      "duration_min": 40,
+      "requires_referral": true,
+      "new_patients_allowed": true
+    },
+    {
+      "id": "appt_081",
+      "name": "Allergy Skin Testing",
+      "specialty": "Allergy/Immunology",
+      "duration_min": 60,
+      "requires_referral": true,
+      "new_patients_allowed": false
+    }
+  ]
+}

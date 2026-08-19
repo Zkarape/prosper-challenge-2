@@ -12,36 +12,36 @@ const tabs: { id: Tab; label: string; glyph: string }[] = [
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_SCHEDULING_API_URL ?? "http://127.0.0.1:8000";
+const VOICE_AGENT_URL = process.env.NEXT_PUBLIC_VOICE_AGENT_URL ?? "http://127.0.0.1:7860/client";
 const GOLDEN_UTTERANCE = "I'm a new patient looking for the earliest dental cleaning with Dr. Wei Lee. Richmond is a must.";
 
 type ApiStatus = "connecting" | "connected" | "offline";
 type Message = { id: string; role: "assistant" | "patient"; text: string; grounded?: boolean };
-type EntityState = { raw_text: string; requirement: "REQUIRED" | "PREFERRED"; priority: number | null } | null;
+type EntityState = { raw_text: string; requirement: "REQUIRED" | "PREFERRED" | "UNSPECIFIED" } | null;
 type SchedulingStateDto = {
   conversation_id: string;
-  version: number;
-  active_intents: string[];
+  current_goal: string | null;
   patient_status: string;
   referral_status: string;
   appointment_type: EntityState;
   provider: EntityState;
   location: EntityState;
-  time: { objective: string; priority: number | null; timezone: string } | null;
-  selected_candidate_id: string | null;
-  selected_slot_id: string | null;
-  confirmed_state_version: number | null;
+  time: { raw_text: string; objective: string } | null;
+  primary_priority: string;
 };
 type TraceEvent = { stage: string; latency_ms: number; title: string; detail: string; tone: string };
 type TurnResponse = {
   conversation_id: string;
   turn_id: string;
-  turn_number: number;
+  message_number: number;
   assistant_message: string;
   state: SchedulingStateDto;
   state_patch: Record<string, unknown>;
   trace: TraceEvent[];
   total_latency_ms: number;
   extractor_mode: string;
+  pending_offer: { offer_id: string; kind: string } | null;
+  usage: { model: string | null; input_tokens: number; cached_input_tokens: number; output_tokens: number };
   offered_slots: { slot_id: string; start: string; duration_min: number }[];
   booking: { booking_id: string; status: string } | null;
   engine_result: {
@@ -115,7 +115,7 @@ function stateFacts(state: SchedulingStateDto | null): [string, string][] {
     ? `${value.raw_text} · ${value.requirement.toLocaleLowerCase()}`
     : empty;
   return [
-    ["Intent", state.active_intents[0]?.replaceAll("_", " ").toLocaleLowerCase() ?? "Unknown"],
+    ["Goal", state.current_goal?.replaceAll("_", " ").toLocaleLowerCase() ?? "Not established"],
     ["Patient", state.patient_status.toLocaleLowerCase()],
     ["Visit", entity(state.appointment_type, "Not provided")],
     ["Provider", entity(state.provider, "No preference")],
@@ -212,6 +212,11 @@ export default function Home() {
     }
   }
 
+  function startVoiceCall() {
+    window.open(VOICE_AGENT_URL, "_blank", "noopener,noreferrer");
+    setCallActive(true);
+  }
+
   function sendMessage(event: FormEvent) {
     event.preventDefault();
     const utterance = composer.trim();
@@ -276,7 +281,7 @@ export default function Home() {
           <div className="top-actions">
             <span className={`demo-badge api-${apiStatus}`}><i /> {apiStatus === "connected" ? "Local API connected" : apiStatus === "offline" ? "API offline" : "Connecting"}</span>
             <button className="secondary-button" type="button" onClick={() => setShowJson(true)} disabled={!currentTurn}>Preview JSON</button>
-            <button className="primary-button" type="button" onClick={() => setCallActive(true)}>
+            <button className="primary-button" type="button" onClick={startVoiceCall}>
               <span aria-hidden="true">◉</span> Test agent
             </button>
           </div>
@@ -295,7 +300,7 @@ export default function Home() {
             onReconnect={() => void createConversation()}
             onRunDemo={() => void createConversation(GOLDEN_UTTERANCE)}
             onSend={sendMessage}
-            onStartCall={() => setCallActive(true)}
+            onStartCall={startVoiceCall}
             submitting={submitting}
           />
         )}
@@ -327,8 +332,8 @@ export default function Home() {
         <div className="call-dock" role="status" aria-live="polite">
           <div className="call-pulse"><span /></div>
           <div>
-            <strong>Test call in progress</strong>
-            <span>Voice transport remains mocked in this slice</span>
+            <strong>Voice test opened</strong>
+            <span>Pipecat uses the same extraction and scheduling service</span>
           </div>
           <div className="waveform" aria-hidden="true">
             {Array.from({ length: 12 }).map((_, index) => <i key={index} />)}
@@ -400,7 +405,7 @@ function Workbench({
           <div className="panel-header">
             <div>
               <span className="panel-icon">◌</span>
-              <div><h3>Conversation</h3><p>Live text API · voice integration pending</p></div>
+              <div><h3>Conversation</h3><p>Shared deterministic service · text and voice</p></div>
             </div>
             <span className={`mode-pill api-${apiStatus}`}><i /> {apiStatus === "connected" ? "LIVE LOCAL API" : apiStatus === "offline" ? "BACKEND OFFLINE" : "CONNECTING"}</span>
           </div>
@@ -435,7 +440,7 @@ function Workbench({
           </div>
 
           <form className="composer" onSubmit={onSend}>
-            <button aria-label={callActive ? "End mocked voice call" : "Open mocked voice call"} className={callActive ? "mic-button listening" : "mic-button"} type="button" onClick={callActive ? onEndCall : onStartCall}>◉</button>
+            <button aria-label={callActive ? "Close voice call status" : "Open voice test client"} className={callActive ? "mic-button listening" : "mic-button"} type="button" onClick={callActive ? onEndCall : onStartCall}>◉</button>
             <input aria-label="Patient message" value={composer} onChange={(event) => onComposerChange(event.target.value)} placeholder={apiStatus === "connected" ? "Type a patient message…" : "Connect the local API to send messages"} disabled={apiStatus !== "connected" || submitting} />
             <span>{submitting ? "Checking…" : "Local rules"}</span>
             <button aria-label="Send message" className="send-button" type="submit" disabled={apiStatus !== "connected" || submitting || !composer.trim()}>↑</button>
@@ -445,7 +450,7 @@ function Workbench({
         <div className="inspector-stack">
           <section className="panel decision-panel">
             <div className="panel-header compact">
-              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>{currentTurn ? `Turn ${currentTurn.turn_number} · ${currentTurn.total_latency_ms} ms total` : "Waiting for a processed turn"}</p></div></div>
+              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>{currentTurn ? `Message ${currentTurn.message_number} · ${currentTurn.total_latency_ms} ms total` : "Waiting for a processed message"}</p></div></div>
               <button aria-label="More decision options" type="button">•••</button>
             </div>
             <div className="trace-list">
@@ -466,7 +471,7 @@ function Workbench({
           </section>
 
           <section className="panel state-panel">
-            <div className="panel-title-row"><div><span className="panel-icon">◇</span><h3>Canonical state</h3></div><span>VERSION {currentTurn?.state.version ?? 0}</span></div>
+            <div className="panel-title-row"><div><span className="panel-icon">◇</span><h3>Patient request</h3></div><span>{currentTurn?.pending_offer?.kind.replaceAll("_", " ") ?? "NO PENDING OFFER"}</span></div>
             <div className="fact-grid">
               {facts.map(([label, value]) => <div className="fact" key={label}><span>{label}</span><strong>{value}</strong></div>)}
             </div>
@@ -475,10 +480,10 @@ function Workbench({
           <section className="panel usage-panel">
             <div className="panel-title-row"><div><span className="panel-icon">↗</span><h3>Context usage</h3></div><span>{currentTurn?.extractor_mode.replaceAll("_", " ") ?? "NO TURN"}</span></div>
             <div className="usage-comparison">
-              <div><span>Current extraction</span><strong>0 <small>LLM tokens</small></strong><i><b style={{ width: currentTurn ? "4%" : "0%" }} /></i></div>
+              <div><span>Current extraction</span><strong>{currentTurn ? currentTurn.usage.input_tokens + currentTurn.usage.output_tokens : 0} <small>LLM tokens</small></strong><i><b style={{ width: currentTurn?.usage.input_tokens ? "34%" : "4%" }} /></i></div>
               <div className="baseline"><span>Full catalog baseline</span><strong>— <small>not measured</small></strong><i><b style={{ width: "0%" }} /></i></div>
             </div>
-            <p className="estimate-note">This slice uses the deterministic local extractor. Model cost telemetry will appear when structured LLM extraction is added.</p>
+            <p className="estimate-note">Structured extraction sees the patient request and pending offer, never the full clinic catalog. Local mode uses zero model tokens.</p>
           </section>
         </div>
       </div>

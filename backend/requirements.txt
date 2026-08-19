@@ -1,0 +1,20 @@
+# Pipecat voice agent stack (verified against pipecat-ai v1.4.0).
+# - runner:     dev runner + prebuilt WebRTC client UI (pipecat-ai-prebuilt), FastAPI/uvicorn
+# - webrtc:     SmallWebRTC transport (aiortc)
+# - silero:     Silero VAD (voice activity detection)
+# - elevenlabs / openai: service extras
+# OpenAI is a core pipecat dependency; the elevenlabs services need no extra SDK.
+pipecat-ai[runner,webrtc,silero,elevenlabs,openai]>=1.4.0,<2
+# Pipecat Flows: node-graph conversations (used by flow_agent.py).
+pipecat-ai-flows>=1.3.0,<2
+
+# Text workbench API. Kept explicit even though the Pipecat runner also uses
+# FastAPI so the local scheduling interface has a stable direct dependency.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+httpx>=0.27,<1
+
+# Structured scheduling extraction. Kept explicit rather than relying on
+# transitive dependencies from Pipecat or FastAPI.
+openai>=2.0,<3
+pydantic>=2.11,<3

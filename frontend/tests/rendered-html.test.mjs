@@ -27,7 +27,7 @@ test("server-renders the Prosper Agent Studio shell", async () => {
   assert.match(html, /Conversation/);
   assert.match(html, /Decision trace/);
   assert.match(html, /Connecting/);
-  assert.match(html, /Live text API/);
+  assert.match(html, /Shared deterministic service/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
@@ -40,7 +40,7 @@ test("ships product metadata and removes the disposable starter", async () => {
 
   assert.match(layout, /Prosper Agent Studio/);
   assert.match(layout, /og\.png/);
-  assert.match(page, /canonical state/i);
+  assert.match(page, /patient request/i);
   assert.match(page, /NEXT_PUBLIC_SCHEDULING_API_URL/);
   assert.match(packageJson, /"name": "prosper-agent-studio"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
