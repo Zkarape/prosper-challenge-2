@@ -36,7 +36,8 @@ class ConversationServiceTests(unittest.TestCase):
 
         second = self.turn("Yes, Mission District works.")
         self.assertEqual(second["pending_offer"]["kind"], "SLOT_OPTIONS")
-        self.assertEqual(len(second["offered_slots"]), 3)
+        self.assertEqual(len(second["offered_slots"]), 1)
+        self.assertIn("earliest opening", second["assistant_message"])
 
         third = self.turn("The first one.")
         self.assertEqual(third["pending_offer"]["kind"], "CONFIRM_BOOKING")
@@ -56,7 +57,24 @@ class ConversationServiceTests(unittest.TestCase):
         )
         response = self.turn("Maybe sometime later.")
         self.assertEqual(response["pending_offer"]["kind"], "SLOT_OPTIONS")
-        self.assertIn("Which option", response["assistant_message"])
+        self.assertIn("earliest time", response["assistant_message"])
+
+    def test_missing_time_defaults_to_earliest_without_weekday_question(self):
+        first = self.turn("I want to book an appointment for my knee MRI.")
+        self.assertEqual(first["patient_request"]["time"]["objective"], "EARLIEST_AVAILABLE")
+        self.assertEqual(first["patient_request"]["primary_priority"], "EARLIEST_TIME")
+        self.assertEqual(first["engine_result"]["next_action"]["fields"], ["patient_status"])
+        self.assertNotIn("day of the week", first["assistant_message"].lower())
+        self.assertTrue(
+            any(item["stage"] == "Default" for item in first["trace"])
+        )
+
+        second = self.turn("I am an existing patient.")
+        self.assertIn("referral", second["assistant_message"].lower())
+        third = self.turn("Yes, it is on file.")
+        self.assertEqual(len(third["offered_slots"]), 1)
+        self.assertIn("earliest opening", third["assistant_message"])
+        self.assertNotIn("day of the week", third["assistant_message"].lower())
 
     def test_declined_confirmation_does_not_book(self):
         self.turn(
@@ -117,6 +135,20 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertEqual(response["engine_result"]["next_action"]["type"], "ANSWER_INFORMATION")
         self.assertIn("practices at", response["assistant_message"])
         self.assertIsNone(response["patient_request"]["current_goal"])
+        self.assertIsNone(response["patient_request"]["provider"])
+
+    def test_yes_answers_a_referral_question_without_llm_policy_authority(self):
+        first = self.turn("I'm a new patient. Book a Cardiology Consultation.")
+        self.assertEqual(first["pending_offer"]["kind"], "FIELD_OPTIONS")
+        self.assertIn("referral", first["assistant_message"].lower())
+        second = self.turn("Yes")
+        self.assertEqual(second["patient_request"]["referral_status"], "ON_FILE")
+        self.assertNotEqual(second["engine_result"]["decision"]["status"], "BLOCKED")
+
+    def test_cancel_goal_is_handed_off_without_entering_booking(self):
+        response = self.turn("I need to cancel my appointment")
+        self.assertEqual(response["engine_result"]["next_action"]["type"], "HANDOFF_TO_STAFF")
+        self.assertIsNone(response["booking"])
 
 
 if __name__ == "__main__":

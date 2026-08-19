@@ -109,6 +109,14 @@ class SchedulingEngineTests(unittest.TestCase):
         resolution = self.catalog.resolve_provider("Dr. Linda Ramirez")
         self.assertEqual(resolution.status, "AMBIGUOUS")
 
+    def test_verbose_patient_phrase_resolves_knee_mri(self):
+        resolution = self.catalog.resolve_appointment_type(
+            "an appointment for my knee MRI"
+        )
+        self.assertEqual(resolution.status, "RESOLVED")
+        self.assertEqual(resolution.selected["id"], "appt_065")
+        self.assertEqual(resolution.match_method, "NAME_TOKENS_IN_QUERY")
+
     def test_catalog_version_is_a_content_hash(self):
         self.assertTrue(self.catalog.version.startswith("sha256:"))
         self.assertEqual(len(self.catalog.version), 71)

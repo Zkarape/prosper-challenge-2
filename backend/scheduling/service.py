@@ -19,13 +19,10 @@ from .availability import MockAvailability, MockBookingService, Slot
 from .catalog import Catalog
 from .engine import SchedulingEngine
 from .extractor import RuleBasedExtractor
-from .state import Requirement, SchedulingRequest
+from .state import PreferencePriority, Requirement, SchedulingRequest, TimePreference
 
 
-GREETING = (
-    "Hi, I’m the clinic’s scheduling assistant. What type of appointment "
-    "would you like to schedule?"
-)
+GREETING = "Hi, I’m the clinic’s scheduling assistant. How can I help you today?"
 
 
 @dataclass
@@ -171,9 +168,6 @@ class ConversationService:
             conversation_id=conversation_id,
             message_id=message_id,
             message_number=conversation.message_number,
-            # Kept for the existing frontend contract; it is a log counter only.
-            turn_id=message_id,
-            turn_number=conversation.message_number,
             patient_request=conversation.patient_request.to_dict(),
             state=conversation.patient_request.to_dict(),
             pending_offer=(
@@ -273,6 +267,14 @@ class ConversationService:
             return self._evaluate_request(conversation, trace, {})
 
         answer = validated.pending_answer
+        if (
+            offer.kind == OfferKind.FIELD_OPTIONS
+            and offer.options
+            and offer.options[0].option_id == "referral_on_file"
+            and answer in {"ACCEPT", "REJECT"}
+        ):
+            option = offer.options[0] if answer == "ACCEPT" else offer.options[1]
+            return self._accept_field_option(conversation, option, trace)
         if answer == "REJECT":
             for option in offer.options:
                 conversation.rejected_alternatives.add(option.option_id)
@@ -397,7 +399,11 @@ class ConversationService:
             offered_catalog_version=offer.catalog_version,
             current_catalog_version=self.catalog.version,
         )
-        if booking.get("status") != "confirmed" or not booking.get("booking_id"):
+        if (
+            booking.get("status") != "confirmed"
+            or not booking.get("booking_id")
+            or booking.get("offer_id") != offer.offer_id
+        ):
             raise ValueError("BOOKING_SERVICE_DID_NOT_CONFIRM")
         conversation.booking = booking
         conversation.pending_offer = None
@@ -417,6 +423,61 @@ class ConversationService:
         trace: list[dict[str, Any]],
         patch: dict[str, Any],
     ) -> dict[str, Any]:
+        request = conversation.patient_request
+        if request.current_goal == "BOOK_APPOINTMENT" and request.time is None:
+            request.time = TimePreference(
+                raw_text="earliest available (default)",
+                objective="EARLIEST_AVAILABLE",
+            )
+            if request.primary_priority == PreferencePriority.UNSPECIFIED:
+                request.primary_priority = PreferencePriority.EARLIEST_TIME
+            self._trace(
+                trace,
+                "Default",
+                perf_counter(),
+                "Earliest availability selected",
+                "No time preference was stated, so the scheduler used its earliest-time default",
+                "success",
+                {
+                    "field": "time",
+                    "value": "EARLIEST_AVAILABLE",
+                    "source": "SERVER_DEFAULT",
+                },
+            )
+
+        if conversation.patient_request.current_goal in {
+            "RESCHEDULE_APPOINTMENT",
+            "CANCEL_APPOINTMENT",
+        }:
+            goal = conversation.patient_request.current_goal
+            engine_result = {
+                "catalog_version": self.catalog.version,
+                "request_fingerprint": conversation.patient_request.fingerprint(),
+                "resolution": {},
+                "decision": {"status": "STAFF_HANDOFF_REQUIRED"},
+                "blockers": [
+                    {
+                        "code": "GOAL_NOT_AUTOMATED",
+                        "field": "current_goal",
+                        "reason": "This demo automates new bookings only.",
+                        "recoverable": False,
+                    }
+                ],
+                "rule_results": [],
+                "valid_candidates": [],
+                "relaxation_candidates": [],
+                "next_action": {"type": "HANDOFF_TO_STAFF"},
+            }
+            conversation.last_result = engine_result
+            conversation.pending_offer = None
+            action = "rescheduling" if goal == "RESCHEDULE_APPOINTMENT" else "cancellation"
+            self._trace(trace, "Decision", perf_counter(), "Route to clinic staff", f"Automated {action} is outside this demo", "active")
+            return self._base_result(
+                conversation,
+                f"I can help with new bookings here, but clinic staff need to handle {action}.",
+                patch,
+                engine_result=engine_result,
+            )
         stage = perf_counter()
         engine_result = self.engine.evaluate(conversation.patient_request)
         conversation.last_result = engine_result
@@ -466,7 +527,11 @@ class ConversationService:
             ranked.sort(key=lambda item: (item[1].start, item[0], item[1].id))
         else:
             ranked.sort(key=lambda item: (item[0], item[1].start, item[1].id))
-        selected = ranked[:3]
+        earliest_first = (
+            conversation.patient_request.primary_priority
+            == PreferencePriority.EARLIEST_TIME
+        )
+        selected = ranked[:1] if earliest_first else ranked[:3]
         options = [
             OfferOption(
                 option_id=f"option_{index + 1}_{slot.id}",
@@ -481,11 +546,27 @@ class ConversationService:
             catalog_version=self.catalog.version,
             options=options,
         )
-        self._trace(trace, "Decision", perf_counter(), f"Offer {len(options)} checked slots", "Compared availability across eligible candidates", "active", {"offer_id": conversation.pending_offer.offer_id, "option_ids": [item.option_id for item in options]})
+        self._trace(
+            trace,
+            "Decision",
+            perf_counter(),
+            "Offer earliest checked slot" if earliest_first else f"Offer {len(options)} checked slots",
+            "Compared availability across eligible candidates",
+            "active",
+            {
+                "offer_id": conversation.pending_offer.offer_id,
+                "option_ids": [item.option_id for item in options],
+            },
+        )
         choices = "; ".join(f"{index + 1}) {item.label}" for index, item in enumerate(options))
+        message = (
+            f"The earliest opening is {options[0].label}. Does that time work for you?"
+            if earliest_first and options
+            else f"I found these openings: {choices}. Which option works best?"
+        )
         return self._base_result(
             conversation,
-            f"I found these openings: {choices}. Which option works best?",
+            message,
             patch,
             engine_result=result,
             offered_slots=[item.value["slot"] for item in options],
@@ -644,6 +725,8 @@ class ConversationService:
         self._trace(trace, "Decision", perf_counter(), "Clarify the pending offer", "No answer or change was guessed", "active")
         if offer and offer.kind == OfferKind.CONFIRM_BOOKING:
             message = "I haven’t booked it yet. Please say yes to confirm or no to cancel."
+        elif offer and offer.kind == OfferKind.SLOT_OPTIONS and len(offer.options) == 1:
+            message = "Does that earliest time work for you? Please say yes or no."
         elif offer and offer.kind in {OfferKind.SLOT_OPTIONS, OfferKind.FIELD_OPTIONS}:
             message = f"Which option would you like—{self._option_words(len(offer.options))}?"
         else:

@@ -23,18 +23,19 @@ test("server-renders the Prosper Agent Studio shell", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Prosper Agent Studio<\/title>/i);
-  assert.match(html, /See every scheduling decision/);
-  assert.match(html, /Conversation/);
+  assert.match(html, /Talk to your scheduling agent/);
+  assert.match(html, /Text conversation/);
   assert.match(html, /Decision trace/);
   assert.match(html, /Connecting/);
-  assert.match(html, /Shared deterministic service/);
+  assert.match(html, /Deterministic scheduling service/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
 test("ships product metadata and removes the disposable starter", async () => {
-  const [layout, page, packageJson] = await Promise.all([
+  const [layout, page, voicePanel, packageJson] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/voice-call-panel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -42,6 +43,9 @@ test("ships product metadata and removes the disposable starter", async () => {
   assert.match(layout, /og\.png/);
   assert.match(page, /patient request/i);
   assert.match(page, /NEXT_PUBLIC_SCHEDULING_API_URL/);
+  assert.doesNotMatch(page, /window\.open/);
+  assert.match(voicePanel, /aria-label="Start voice call"/);
+  assert.doesNotMatch(voicePanel, /role="dialog"|voice-call-backdrop/);
   assert.match(packageJson, /"name": "prosper-agent-studio"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("../public/og.png", import.meta.url));

@@ -5,9 +5,9 @@ strict schema. Application code validates those observations, resolves raw phras
 the clinic catalog, evaluates policy, ranks candidates, checks availability, and writes a
 booking. The full catalog is never placed in the extraction prompt.
 
-## Shared turn path
+## Deterministic text path
 
-Typed and spoken messages both call `ConversationService`:
+Typed messages call `ConversationService`:
 
 ```text
 patient text
@@ -19,8 +19,15 @@ patient text
   -> grounded response
 ```
 
-Pipecat provides WebRTC audio transport. ElevenLabs produces the final transcript and
-speaks the checked response. It cannot bypass the scheduling service.
+## Embedded live-voice path
+
+Pipecat provides WebRTC audio transport and ElevenLabs commits the patient transcript
+after end-of-speech detection. That committed turn calls the same `ConversationService`
+as typed messages: OpenAI performs observation-only extraction, deterministic code
+applies defaults and scheduling rules, and ElevenLabs speaks only the checked response.
+RTVI server messages stream the resulting state patch, rule trace, selected action,
+latency, and extraction-token usage to the main Agent Studio Workbench. The recording
+control is the primary action and does not open a modal, page, or browser window.
 
 ## Reliability choices
 

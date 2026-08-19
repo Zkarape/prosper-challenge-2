@@ -1,8 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, type ComponentType, type ReactNode, useEffect, useMemo, useState } from "react";
 
 type Tab = "workbench" | "graph" | "catalog" | "evaluations";
+type VoiceCallPanelComponent = ComponentType<{
+  endpoint: string;
+  onSchedulingTurn: (turn: unknown) => void;
+}>;
 
 const tabs: { id: Tab; label: string; glyph: string }[] = [
   { id: "workbench", label: "Workbench", glyph: "◫" },
@@ -12,7 +16,7 @@ const tabs: { id: Tab; label: string; glyph: string }[] = [
 ];
 
 const API_BASE = process.env.NEXT_PUBLIC_SCHEDULING_API_URL ?? "http://127.0.0.1:8000";
-const VOICE_AGENT_URL = process.env.NEXT_PUBLIC_VOICE_AGENT_URL ?? "http://127.0.0.1:7860/client";
+const VOICE_AGENT_URL = process.env.NEXT_PUBLIC_VOICE_AGENT_URL ?? "http://127.0.0.1:7860";
 const GOLDEN_UTTERANCE = "I'm a new patient looking for the earliest dental cleaning with Dr. Wei Lee. Richmond is a must.";
 
 type ApiStatus = "connecting" | "connected" | "offline";
@@ -29,10 +33,10 @@ type SchedulingStateDto = {
   time: { raw_text: string; objective: string } | null;
   primary_priority: string;
 };
-type TraceEvent = { stage: string; latency_ms: number; title: string; detail: string; tone: string };
+type TraceEvent = { stage: string; latency_ms: number; title: string; detail: string; tone: string; data?: Record<string, unknown> };
 type TurnResponse = {
   conversation_id: string;
-  turn_id: string;
+  message_id: string;
   message_number: number;
   assistant_message: string;
   state: SchedulingStateDto;
@@ -104,7 +108,7 @@ function Mark() {
 
 function stateFacts(state: SchedulingStateDto | null): [string, string][] {
   if (!state) return [
-    ["Intent", "Unknown"],
+    ["Goal", "Not established"],
     ["Patient", "Unknown"],
     ["Visit", "Not provided"],
     ["Provider", "No preference"],
@@ -125,13 +129,14 @@ function stateFacts(state: SchedulingStateDto | null): [string, string][] {
 }
 
 export default function Home() {
+  const [VoiceCallPanel, setVoiceCallPanel] = useState<VoiceCallPanelComponent | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("workbench");
-  const [callActive, setCallActive] = useState(false);
   const [composer, setComposer] = useState("");
   const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentTurn, setCurrentTurn] = useState<TurnResponse | null>(null);
+  const [turnSource, setTurnSource] = useState<"text" | "voice">("text");
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showJson, setShowJson] = useState(false);
@@ -157,10 +162,21 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    void import("./voice-call-panel").then(({ VoiceCallPanel: LoadedVoiceCallPanel }) => {
+      if (mounted) setVoiceCallPanel(() => LoadedVoiceCallPanel);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   async function createConversation(initialUtterance?: string) {
     setApiStatus("connecting");
     setApiError(null);
     setCurrentTurn(null);
+    setTurnSource("text");
     setSubmitting(Boolean(initialUtterance));
     try {
       const response = await fetch(`${API_BASE}/api/conversations`, { method: "POST" });
@@ -195,7 +211,7 @@ export default function Home() {
       if (!response.ok) throw new Error(`API returned ${response.status}`);
       const turn = await response.json() as TurnResponse;
       const assistantMessage: Message = {
-        id: turn.turn_id,
+        id: turn.message_id,
         role: "assistant",
         text: turn.assistant_message,
         grounded: true,
@@ -203,6 +219,7 @@ export default function Home() {
       if (baseMessages) setMessages([...baseMessages, patientMessage, assistantMessage]);
       else setMessages((existing) => [...existing, assistantMessage]);
       setCurrentTurn(turn);
+      setTurnSource("text");
       setApiStatus("connected");
     } catch {
       setApiStatus("offline");
@@ -210,11 +227,6 @@ export default function Home() {
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function startVoiceCall() {
-    window.open(VOICE_AGENT_URL, "_blank", "noopener,noreferrer");
-    setCallActive(true);
   }
 
   function sendMessage(event: FormEvent) {
@@ -281,27 +293,33 @@ export default function Home() {
           <div className="top-actions">
             <span className={`demo-badge api-${apiStatus}`}><i /> {apiStatus === "connected" ? "Local API connected" : apiStatus === "offline" ? "API offline" : "Connecting"}</span>
             <button className="secondary-button" type="button" onClick={() => setShowJson(true)} disabled={!currentTurn}>Preview JSON</button>
-            <button className="primary-button" type="button" onClick={startVoiceCall}>
-              <span aria-hidden="true">◉</span> Test agent
-            </button>
           </div>
         </header>
 
         {activeTab === "workbench" && (
           <Workbench
-            callActive={callActive}
             composer={composer}
             apiError={apiError}
             apiStatus={apiStatus}
             currentTurn={currentTurn}
             messages={messages}
             onComposerChange={setComposer}
-            onEndCall={() => setCallActive(false)}
             onReconnect={() => void createConversation()}
             onRunDemo={() => void createConversation(GOLDEN_UTTERANCE)}
             onSend={sendMessage}
-            onStartCall={startVoiceCall}
             submitting={submitting}
+            turnSource={turnSource}
+            voicePanel={VoiceCallPanel
+              ? (
+                <VoiceCallPanel
+                  endpoint={VOICE_AGENT_URL}
+                  onSchedulingTurn={(turn) => {
+                    setCurrentTurn(turn as TurnResponse);
+                    setTurnSource("voice");
+                  }}
+                />
+              )
+              : <div className="voice-panel-loading">Preparing the live voice agent…</div>}
           />
         )}
         {activeTab === "graph" && (
@@ -328,19 +346,6 @@ export default function Home() {
         {activeTab === "evaluations" && <Evaluations />}
       </section>
 
-      {callActive && (
-        <div className="call-dock" role="status" aria-live="polite">
-          <div className="call-pulse"><span /></div>
-          <div>
-            <strong>Voice test opened</strong>
-            <span>Pipecat uses the same extraction and scheduling service</span>
-          </div>
-          <div className="waveform" aria-hidden="true">
-            {Array.from({ length: 12 }).map((_, index) => <i key={index} />)}
-          </div>
-          <button type="button" onClick={() => setCallActive(false)}>End call</button>
-        </div>
-      )}
       {showJson && currentTurn && (
         <div className="modal-backdrop">
           <button className="modal-dismiss" aria-label="Close JSON preview" type="button" onClick={() => setShowJson(false)} />
@@ -357,31 +362,29 @@ export default function Home() {
 function Workbench({
   apiError,
   apiStatus,
-  callActive,
   composer,
   currentTurn,
   messages,
   onComposerChange,
-  onEndCall,
   onReconnect,
   onRunDemo,
   onSend,
-  onStartCall,
   submitting,
+  turnSource,
+  voicePanel,
 }: {
   apiError: string | null;
   apiStatus: ApiStatus;
-  callActive: boolean;
   composer: string;
   currentTurn: TurnResponse | null;
   messages: Message[];
   onComposerChange: (value: string) => void;
-  onEndCall: () => void;
   onReconnect: () => void;
   onRunDemo: () => void;
   onSend: (event: FormEvent) => void;
-  onStartCall: () => void;
   submitting: boolean;
+  turnSource: "text" | "voice";
+  voicePanel: ReactNode;
 }) {
   const facts = stateFacts(currentTurn?.state ?? null);
   const trace = currentTurn?.trace ?? [];
@@ -390,9 +393,9 @@ function Workbench({
     <div className="page workbench-page">
       <section className="page-intro">
         <div>
-          <span className="eyebrow">LIVE DEBUGGING</span>
-          <h2>See every scheduling decision.</h2>
-          <p>Send real text turns through the local scheduler, inspect what it understood, and verify every policy before a booking is made.</p>
+          <span className="eyebrow">LIVE VOICE TESTING</span>
+          <h2>Talk to your scheduling agent.</h2>
+          <p>Test the complete voice connection here, then inspect extraction, defaults, policy checks, token usage, and the selected action below.</p>
         </div>
         <button className="scenario-button" type="button" onClick={onRunDemo} disabled={submitting}>
           <span>▶</span>
@@ -400,12 +403,22 @@ function Workbench({
         </button>
       </section>
 
+      {voicePanel}
+
+      <div className="debugger-heading">
+        <div>
+          <span className="eyebrow">PIPELINE INSPECTOR</span>
+          <h3>See what happened underneath</h3>
+        </div>
+        <p>Every completed voice turn updates the trace, patient request, and context usage. The text simulator remains available for repeatable debugging.</p>
+      </div>
+
       <div className="workbench-grid">
         <section className="panel conversation-panel">
           <div className="panel-header">
             <div>
               <span className="panel-icon">◌</span>
-              <div><h3>Conversation</h3><p>Shared deterministic service · text and voice</p></div>
+              <div><h3>Text conversation</h3><p>Deterministic scheduling service</p></div>
             </div>
             <span className={`mode-pill api-${apiStatus}`}><i /> {apiStatus === "connected" ? "LIVE LOCAL API" : apiStatus === "offline" ? "BACKEND OFFLINE" : "CONNECTING"}</span>
           </div>
@@ -440,7 +453,6 @@ function Workbench({
           </div>
 
           <form className="composer" onSubmit={onSend}>
-            <button aria-label={callActive ? "Close voice call status" : "Open voice test client"} className={callActive ? "mic-button listening" : "mic-button"} type="button" onClick={callActive ? onEndCall : onStartCall}>◉</button>
             <input aria-label="Patient message" value={composer} onChange={(event) => onComposerChange(event.target.value)} placeholder={apiStatus === "connected" ? "Type a patient message…" : "Connect the local API to send messages"} disabled={apiStatus !== "connected" || submitting} />
             <span>{submitting ? "Checking…" : "Local rules"}</span>
             <button aria-label="Send message" className="send-button" type="submit" disabled={apiStatus !== "connected" || submitting || !composer.trim()}>↑</button>
@@ -450,7 +462,7 @@ function Workbench({
         <div className="inspector-stack">
           <section className="panel decision-panel">
             <div className="panel-header compact">
-              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>{currentTurn ? `Message ${currentTurn.message_number} · ${currentTurn.total_latency_ms} ms total` : "Waiting for a processed message"}</p></div></div>
+              <div><span className="panel-icon">↳</span><div><h3>Decision trace</h3><p>{currentTurn ? `${turnSource === "voice" ? "Voice" : "Text"} message ${currentTurn.message_number} · ${currentTurn.total_latency_ms} ms total` : "Waiting for a processed message"}</p></div></div>
               <button aria-label="More decision options" type="button">•••</button>
             </div>
             <div className="trace-list">
@@ -461,6 +473,7 @@ function Workbench({
                     <div><b>{item.stage}</b><time>{item.latency_ms} ms</time></div>
                     <strong>{item.title}</strong>
                     <p>{item.detail}</p>
+                    {item.data && Object.keys(item.data).length > 0 && <code>{JSON.stringify(item.data)}</code>}
                   </div>
                 </div>
               ))}
@@ -475,15 +488,21 @@ function Workbench({
             <div className="fact-grid">
               {facts.map(([label, value]) => <div className="fact" key={label}><span>{label}</span><strong>{value}</strong></div>)}
             </div>
+            {currentTurn && (
+              <div className="pipeline-inspection">
+                <div><span>Validated extraction update</span><code>{JSON.stringify(currentTurn.state_patch)}</code></div>
+                <div><span>Engine-selected action</span><code>{JSON.stringify(currentTurn.engine_result.next_action)}</code></div>
+              </div>
+            )}
           </section>
 
           <section className="panel usage-panel">
-            <div className="panel-title-row"><div><span className="panel-icon">↗</span><h3>Context usage</h3></div><span>{currentTurn?.extractor_mode.replaceAll("_", " ") ?? "NO TURN"}</span></div>
+            <div className="panel-title-row"><div><span className="panel-icon">↗</span><h3>Context usage</h3></div><span>{currentTurn ? `${turnSource.toUpperCase()} · ${currentTurn.extractor_mode.replaceAll("_", " ")}` : "NO TURN"}</span></div>
             <div className="usage-comparison">
-              <div><span>Current extraction</span><strong>{currentTurn ? currentTurn.usage.input_tokens + currentTurn.usage.output_tokens : 0} <small>LLM tokens</small></strong><i><b style={{ width: currentTurn?.usage.input_tokens ? "34%" : "4%" }} /></i></div>
+              <div><span>Current extraction</span><strong>{currentTurn ? currentTurn.usage.input_tokens + currentTurn.usage.output_tokens : 0} <small>LLM tokens</small></strong><em>{currentTurn ? `${currentTurn.usage.input_tokens} input · ${currentTurn.usage.cached_input_tokens} cached · ${currentTurn.usage.output_tokens} output` : "No processed turn"}</em><i><b style={{ width: currentTurn?.usage.input_tokens ? "34%" : "4%" }} /></i></div>
               <div className="baseline"><span>Full catalog baseline</span><strong>— <small>not measured</small></strong><i><b style={{ width: "0%" }} /></i></div>
             </div>
-            <p className="estimate-note">Structured extraction sees the patient request and pending offer, never the full clinic catalog. Local mode uses zero model tokens.</p>
+            <p className="estimate-note">Structured extraction sees the current patient request, pending offer, and latest utterance—never the full clinic catalog. Voice turns update this panel live.</p>
           </section>
         </div>
       </div>

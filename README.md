@@ -1,32 +1,40 @@
 # Prosper Challenge — Context Management
 
-Voice AI for healthcare scheduling with observation-only LLM extraction and a deterministic scheduling engine.
+Voice AI for healthcare scheduling with an embedded live-call tester, observation-only LLM extraction, and a deterministic scheduling engine.
 
 - **Phase 1** — a UI to edit the node graph and place a test call.
 - **Phase 2** — a context-management approach so a scheduling agent can reliably and cost-effectively navigate a large catalog of locations, doctors, and appointment types.
 
 ```
-browser mic -> ElevenLabs STT -> shared ConversationService -> ElevenLabs TTS -> browser
-                                      |
-                        structured LLM extraction
-                                      |
-             catalog resolution + rules + availability + booking
+browser mic -> Pipecat WebRTC -> ElevenLabs STT -> completed patient turn
+    -> structured LLM extraction -> deterministic scheduler
+    -> checked response -> ElevenLabs TTS -> browser audio
 ```
 
-Pipecat's dev runner ships a **prebuilt browser client**, so the test-call UI comes for free — no frontend code to write yet.
+The live call is rendered inside Prosper Agent Studio. The user is never redirected to Pipecat's prebuilt client.
+
+Voice and text now use the same `ConversationService`. The LLM reports only patient-stated facts; application code applies defaults, resolves the catalog, checks policy and availability, owns pending offers, and confirms a booking only after the mock booking system succeeds.
 
 ## Quickstart
 
-Requires **Python 3.11+**. Run from the repo root:
+Requires **Python 3.11+**, Node 22+, `OPENAI_API_KEY`, and `ELEVENLABS_API_KEY`. Copy `backend/.env.example` to `backend/.env`, fill in the keys, then run these in separate terminals from the repo root:
 
 ```bash
 make install
 make run
 ```
 
-Open the URL it prints (default `http://localhost:7860/client`), click **Connect**, allow mic access, and talk to the agent. `Ctrl+C` to stop. (`make help` lists all targets.)\
-\
-Remember to update the `.env` file accordingly.
+```bash
+make api
+```
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3001`, press the large recording button on the Workbench, and allow microphone access. Speak naturally and pause when finished. The transcript is finalized after end-of-speech detection, sent to the LLM, and both sides of the conversation appear on the same screen while the assistant audio plays there.
 
 ## Text workbench
 
@@ -45,7 +53,7 @@ npm install
 npm run dev
 ```
 
-The frontend sends text turns to `http://127.0.0.1:8000`, then renders the patient request, decision trace, alternatives, offered slots, and mock booking result. The **Test agent** button opens Pipecat's WebRTC client at `http://127.0.0.1:7860/client`. Text and voice call the same `ConversationService`.
+The frontend sends text turns to `http://127.0.0.1:8000`, then renders the patient request, decision trace, alternatives, offered slots, and mock booking result. The main voice surface connects directly to the Pipecat runner at `http://127.0.0.1:7860`; it never opens another page or window.
 
 `EXTRACTOR_MODE=auto` uses OpenAI Structured Outputs when `OPENAI_API_KEY` is available and the local structured fallback otherwise. The default extraction model is configured by `EXTRACTION_MODEL`.
 
@@ -53,7 +61,8 @@ The frontend sends text turns to `http://127.0.0.1:8000`, then renders the patie
 
 | Path | Responsibility |
 | --- | --- |
-| `backend/bot.py` | Pipecat WebRTC + ElevenLabs STT/TTS transport around the shared scheduling service. |
+| `backend/bot.py` | Pipecat WebRTC, end-of-speech detection, the shared scheduling turn service, live diagnostics, and ElevenLabs STT/TTS. |
+| `frontend/app/voice-call-panel.tsx` | Embedded call controls, microphone connection, browser audio, and live patient/assistant transcript. |
 | `backend/extraction/` | Strict Pydantic extraction schema, prompt, OpenAI Responses adapter, telemetry, and semantic validator. |
 | `backend/scheduling/` | Patient request reducer, content-hashed catalog resolution, deterministic rules, availability, booking, and shared turn service. |
 | `backend/conversation/` | Server-owned pending offers and option IDs used for selections and confirmation. |

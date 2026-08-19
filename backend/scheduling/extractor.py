@@ -28,6 +28,7 @@ class RuleBasedExtractor:
     APPOINTMENT_ALIASES = {
         "dental cleaning": "dental cleaning",
         "cleaning": "cleaning",
+        "knee mri": "knee MRI",
         "physical therapy": "physical therapy",
         "pt evaluation": "PT evaluation",
     }
@@ -134,7 +135,7 @@ class RuleBasedExtractor:
         self._extract_clears(wire, patient_text)
 
         earliest = re.search(
-            r"\b(earliest|soonest|first available|as soon as possible)\b",
+            r"\b(earliest|soonest|first available|as soon as possible|asap)\b",
             patient_text,
             re.I,
         )

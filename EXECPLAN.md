@@ -12,14 +12,14 @@ The system must never rely on the language model to enforce booking rules. The l
 
 - [x] (2026-08-18) Read the challenge, catalog, current voice pipeline, graph schema, and repository instructions.
 - [x] (2026-08-19) Create the `frontend/` dashboard project and complete the first independently reviewable product slice.
-- [ ] Implement typed scheduling state, catalog loading, entity resolution, rule evaluation, and explainable candidate ranking. (Completed: initial state patching, integrity validation, contextual name resolution, core rules, hard-versus-soft location behavior, and 7 passing tests. Remaining: broader resolution, policy check trace, ranking cases, and full edge-case coverage.)
-- [x] (2026-08-18) Implement deterministic mock availability and idempotent mock booking, including timezone-aware slots, duration validation, current-state confirmation, and duplicate-request protection.
-- [ ] Add table-driven unit tests, catalog integrity tests, and evaluation fixtures covering the catalog's difficult cases.
+- [x] (2026-08-19) Implement the typed patient request, content-hashed catalog, entity resolution, per-rule results, exact invalid-request proof, relevant-question selection, explainable ranking, and hard-versus-soft alternatives.
+- [x] (2026-08-19) Implement deterministic mock availability and idempotent mock booking, including catalog-derived timezones, duration validation, request/offer validation, and duplicate-request protection.
+- [x] (2026-08-19) Add unit and end-to-end coverage for extraction validation, difficult catalog cases, pending offers, stale slots, idempotency, API contracts, and the voice adapter.
 - [ ] Add backend endpoints for text turns, state inspection, trace inspection, evaluation runs, catalog browsing, and agent graph loading/saving. (Completed: conversation creation, conversation inspection, text turns, health check, deterministic local extraction, per-turn trace, slots, confirmation, and mock booking. Remaining: durable trace lookup, evaluation, catalog, graph, and structured LLM endpoints.)
-- [ ] Replace the frontend starter with the scheduling workbench, decision trace, usage dashboard, and graph editor. (Completed: responsive shell; live local text conversation; backend-owned state, trace, alternatives, slots, and booking result; JSON inspection; explicit offline handling; graph editor prototype; searchable catalog sample; evaluation empty state; product metadata; and private frontend preview. Remaining: persist graph edits, load the full catalog, display measured LLM usage and evaluations, and connect voice.)
-- [ ] Connect the scheduling loop and trace events to the Pipecat voice call.
-- [ ] Run backend tests, frontend build, and representative end-to-end scenarios.
-- [ ] Write `solution.md` with architecture, measured evaluation results, cost comparison, trade-offs, and intentionally omitted scope.
+- [x] (2026-08-19) Replace the frontend starter with the scheduling workbench, decision trace, live extraction usage, patient-request view, graph editor prototype, catalog sample, and an embedded Pipecat test call.
+- [x] (2026-08-19) Connect committed voice transcripts to structured extraction and the deterministic scheduler; stream live transcripts, checked responses, usage, state, and decision traces into the Workbench.
+- [x] (2026-08-19) Run backend tests, strict-schema validation, frontend tests/lint/build, Pipecat/OpenAI imports, and the representative golden scenario.
+- [x] (2026-08-19) Write `solution.md` with architecture, safety boundaries, trade-offs, and intentionally mocked scope.
 
 ## Surprises & Discoveries
 
@@ -37,6 +37,8 @@ The system must never rely on the language model to enforce booking rules. The l
   Evidence: every unconnected surface is labeled `Frontend demo`, `DEMO DATA`, `SAMPLE VIEW`, `Illustrative`, or `NOT RUN`; `npm test` reports two passing rendered-shell tests and `npm run lint` succeeds.
 - Observation: The complete golden scheduling path is now testable without service keys or an LLM.
   Evidence: `make test-backend` reports 17 passing tests, including HTTP contract coverage and a four-turn conversation that preserves the Richmond constraint, accepts Mission District, offers duration-safe slots, asks for current-state confirmation, and performs one idempotent booking.
+- Observation: A separate conversational voice LLM produced unnecessary questions that the deterministic engine would never select.
+  Evidence: Replacing it with `ConversationService` removes improvised time questions, applies the server-owned earliest-time default, and sends the engine trace and extraction usage to the frontend after every committed voice turn.
 
 ## Decision Log
 
@@ -58,10 +60,16 @@ The system must never rely on the language model to enforce booking rules. The l
 - Decision: Introduce a deterministic local extractor behind the same turn contract planned for structured LLM extraction.
   Rationale: It makes the server-owned conversation, policy, trace, availability, and booking loop demonstrable without keys while allowing the extraction implementation to be replaced independently later.
   Date/Author: 2026-08-19 / Codex and user.
+- Decision: Use `patient_request`, `pending_offer`, and `offer_id` instead of generic state/workflow version names.
+  Rationale: These terms describe the domain directly. A stable request fingerprint invalidates an offer when scheduling facts change, while the offer ID is also the booking idempotency key.
+  Date/Author: 2026-08-19 / Codex and user.
+- Decision: Treat model intents as observations from the latest utterance and keep the conversation's current goal in deterministic code.
+  Rationale: An informational question must not silently cancel an active booking task.
+  Date/Author: 2026-08-19 / Codex and user.
 
 ## Outcomes & Retrospective
 
-Implementation now includes an end-to-end local text scheduling milestone. The frontend creates a real server conversation and renders backend-owned state, trace, alternatives, slots, confirmation, and booking results. The deterministic extractor is intentionally narrower than the future structured LLM extractor, but the full golden path and safety boundaries run without external keys. The graph, full catalog, evaluations, measured LLM usage, and voice integration remain incomplete.
+Implementation now includes one checked scheduling loop for voice and text. The embedded live call uses Pipecat end-of-speech detection, ElevenLabs transcription/speech, observation-only OpenAI extraction, and the deterministic scheduling engine. Each voice turn streams its validated patch, defaults, rule trace, next action, latency, and token usage to the Workbench. Semantic validation, exact requested-combination diagnostics, pending offers, earliest-time defaults, multi-candidate availability, confirmation rechecks, and idempotent booking are complete for the mocked scope. The graph editor remains a prototype, the frontend catalog is still a sample, evaluation reporting is not yet a product surface, and production persistence is intentionally out of scope.
 
 ## Context and Orientation
 
@@ -75,7 +83,7 @@ The new dashboard lives in `frontend/`. It will call small backend HTTP endpoint
 
 The implementation is intentionally narrower than the production design. P0 is the reviewer-facing end-to-end proof; P1 is reliability coverage that may live primarily in tests; P2 is documented production follow-up. Do not delay a working P0 demo to implement P2 behavior.
 
-**P0 — must work in the demo:** structured LLM extraction, server-owned versioned state, entity resolution, deterministic policy checks, hard versus soft constraints, ambiguity, relaxation alternatives, deterministic mock availability, explicit confirmation, idempotent mock booking, per-turn trace, token/cost/latency display, browser voice call, text fallback, and a minimal valid graph editor.
+**P0 — must work in the demo:** structured LLM extraction, a server-owned patient request and pending offers, entity resolution, deterministic policy checks, hard versus soft constraints, ambiguity, relaxation alternatives, deterministic mock availability, explicit confirmation, idempotent mock booking, per-message trace, token/latency display, browser voice call, text fallback, and a minimal valid graph editor.
 
 **P1 — must be tested:** corrections and invalidation, duplicate names, unsupported services, slot-duration validation, idempotency, policy invariants, prompt-injection attempts, grounded response generation, and representative extraction failures.
 
@@ -89,7 +97,7 @@ Its responsibility is observation only. It returns `intent`, `state_patch`, and 
 
 The response-generation model receives a compact `ACTION_CONTEXT` containing the typed conversational action plus only the checked facts needed to say it naturally: relevant blocker explanations, approved candidate names, selected slots, or confirmed booking details. Its prompt explicitly forbids inventing providers, locations, policies, slots, or booking status and forbids changing the engine-selected action.
 
-This gives the runtime boundary: probabilistic language understanding → deterministic state/resolution/policy/action selection → probabilistic verbalization.
+This gives the runtime boundary: probabilistic language understanding → deterministic request/resolution/policy/action selection → deterministic grounded response templates.
 
 ## Entity Resolution Strategy
 
@@ -140,7 +148,7 @@ Latency is recorded per stage. The implementation will optimize for sub-second e
 
 ## Persistence and Ownership
 
-Per conversation, the server owns canonical `SchedulingState`, state version, selected candidate/slot, and confirmation. Per turn, it records the validated LLM patch, `EngineResult`, and `TurnTrace`. Global read-mostly data includes the catalog/index, pricing configuration, evaluation fixtures/results, and agent graph. For the take-home these may remain in memory or local files; a production database is intentionally out of scope.
+Per conversation, the server owns the `SchedulingRequest`, current goal, pending offer, and confirmed booking. A pending offer carries an `offer_id`, patient-request fingerprint, catalog content hash, and server-owned options. Per message, the service returns the validated patch, engine result, safe trace summary, and extraction usage. Production persistence is intentionally out of scope.
 
 ## Plan of Work
 
@@ -156,7 +164,7 @@ Add backend endpoints that accept a text utterance, apply either a real structur
 
 Replace the frontend loading skeleton with a scheduling workbench. The main area will contain the transcript and a test-call control. The decision area will show the state change, entity matches, policy checks, candidate funnel, blockers, availability, and next action for each utterance. A usage area will show per-stage and cumulative tokens, latency, cost, and full-catalog baseline comparison. The graph area will load and edit the declarative agent nodes and edges while preserving JSON validation.
 
-Finally, connect finalized voice transcripts to the same scheduling turn endpoint and stream trace updates to the dashboard. The agent will speak only from the checked next action. Voice failures must not prevent the text demo from working.
+Finally, keep the shared voice adapter observable: every committed transcript calls the deterministic scheduling service, every checked response goes to TTS, and every state/trace/usage result is streamed to the dashboard. Voice failures must not prevent the text demo from working.
 
 ## Concrete Steps
 
@@ -195,11 +203,11 @@ The exact dental example must resolve Dental Cleaning, Dr. Wei Lee, and Richmond
 
 Changing Richmond from required to preferred must make Mission District eligible. A duplicate name such as Dr. Linda Ramirez must produce an ambiguity until the specialty or service resolves it. Physical Therapy Evaluation must return no provider rather than inventing one. Every offered slot must match the appointment duration. Sending the same booking request twice with one idempotency key must create only one booking.
 
-The dashboard must show these facts after each text turn without external keys. With keys present, the same trace must update during a browser voice call. The evaluation report must show structured extraction accuracy, task success, invalid booking rate, tokens per successful booking, estimated cost, and the full-catalog baseline.
+The dashboard must show these facts after each text turn without external keys. With keys present, the embedded browser call must show both transcript roles, play the checked assistant response, and update scheduling traces and extraction usage after every voice turn. The evaluation report must show structured extraction accuracy, task success, invalid booking rate, tokens per successful booking, estimated cost, and the full-catalog baseline.
 
 ## Idempotence and Recovery
 
-Catalog loading, evaluation, and mock slot generation are read-only and repeatable. State updates use increasing versions. Any change to appointment type, provider, location, or time clears incompatible selections and confirmation. Booking retries use an idempotency key. If a model or voice service is unavailable, the text simulator and deterministic tests remain usable. No command in this plan deletes user data.
+Catalog loading, evaluation, and mock slot generation are repeatable. Any change to appointment type, provider, location, time, or primary preference changes the request fingerprint and invalidates the pending offer. Booking retries use the confirmed `offer_id` as an idempotency key. If a model or voice service is unavailable, local structured extraction and deterministic tests remain usable.
 
 ## Artifacts and Notes
 
@@ -224,3 +232,7 @@ Plan revision note (2026-08-18): Adopted the user-provided plan as the implement
 Plan revision note (2026-08-19): Completed the first frontend product slice, recorded its deliberate mock-data boundaries and validation evidence, and corrected the repository working path before backend integration begins.
 
 Plan revision note (2026-08-19): Connected the frontend workbench to a server-owned deterministic text conversation loop, added the HTTP contract and full golden-path coverage, and kept voice, graph persistence, catalog APIs, and LLM extraction explicitly out of this slice.
+
+Plan revision note (2026-08-19): Replaced the redirect to Pipecat's prebuilt client with an embedded WebRTC call panel and added a direct end-of-speech → LLM → TTS path. The deterministic scheduler remains separate and the voice prompt cannot claim booking success until tool integration is implemented.
+
+Plan revision note (2026-08-19): Removed the separate conversational voice LLM after live testing exposed improvised follow-up questions. Committed voice turns now use the shared structured-extraction and deterministic scheduling service, default unstated time to earliest availability, and publish state, trace, action, latency, and token usage to the main Workbench.

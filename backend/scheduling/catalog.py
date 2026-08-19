@@ -134,6 +134,8 @@ class Catalog:
                 score, method = 80, "CONTAINS_NAME"
             elif query_tokens and query_tokens <= name_tokens:
                 score, method = 70, "TOKEN_MATCH"
+            elif name_tokens and name_tokens <= query_tokens:
+                score, method = 65, "NAME_TOKENS_IN_QUERY"
             else:
                 continue
             scored.append((score, self._summary(record, entity_type), method))

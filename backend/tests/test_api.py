@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 import unittest
 
@@ -6,6 +7,9 @@ import unittest
 BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+
+# API contract tests must not change behavior based on a developer's local key.
+os.environ["EXTRACTOR_MODE"] = "local"
 
 from fastapi.testclient import TestClient
 

@@ -14,7 +14,7 @@ install: ## Create the venv and install dependencies
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install -r backend/requirements.txt
 
-run: ## Run the voice agent (then open http://localhost:7860/client)
+run: ## Run the voice agent used by the embedded frontend call tester
 	$(PYTHON) backend/bot.py
 
 api: ## Run the local text scheduling API on http://localhost:8000
