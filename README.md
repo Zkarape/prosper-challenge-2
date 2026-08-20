@@ -40,7 +40,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3001`, press the recording button under **Test agent**, and allow microphone access. Speak naturally and pause when finished. Pipecat combines STT fragments until the patient’s thought is complete, then sends one authoritative turn to the scheduling pipeline. Both sides of that committed conversation appear on the same screen while the assistant audio plays there.
+Open `http://localhost:3001`, press the recording button under **Scheduling agent**, and allow microphone access. Speak naturally and pause when finished. Pipecat combines STT fragments until the patient’s thought is complete, then sends one authoritative turn to the scheduling pipeline. Both sides of that committed conversation appear on the same screen while the assistant audio plays there.
 
 After a processed turn, open **Agent graph** to see which stages ran and inspect their validated inputs, decisions, token usage, and booking result.
 

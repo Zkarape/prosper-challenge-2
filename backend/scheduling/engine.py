@@ -169,7 +169,11 @@ class SchedulingEngine:
                 "requires_patient_permission": True,
             }
         else:
-            relaxed = self._relaxable_candidates(evaluated)
+            relaxed = self._minimal_change_candidates(
+                self._relaxable_candidates(evaluated),
+                patient_request,
+                resolutions,
+            )
             if relaxed:
                 status = "NO_EXACT_MATCH"
                 relaxation_candidates = [
@@ -528,6 +532,30 @@ class SchedulingEngine:
                 output.append(candidate)
         return output
 
+    @classmethod
+    def _minimal_change_candidates(
+        cls,
+        candidates: list[Candidate],
+        request: SchedulingRequest,
+        resolutions: dict[str, Resolution],
+    ) -> list[Candidate]:
+        """Keep alternatives that change the fewest named patient choices."""
+
+        if not candidates:
+            return []
+        candidates_with_changes = [
+            (candidate, cls._changed_named_fields(candidate, request, resolutions))
+            for candidate in candidates
+        ]
+        minimum_change_count = min(
+            len(changes) for _, changes in candidates_with_changes
+        )
+        return [
+            candidate
+            for candidate, changes in candidates_with_changes
+            if len(changes) == minimum_change_count
+        ]
+
     @staticmethod
     def _changed_named_fields(
         candidate: Candidate,
@@ -549,8 +577,11 @@ class SchedulingEngine:
 
     @staticmethod
     def _blocker(rule: RuleResult) -> dict[str, Any]:
+        blocker_codes = {
+            "LOCATION_HAS_REQUIRED_CAPABILITY": "LOCATION_MISSING_CAPABILITY",
+        }
         return {
-            "code": rule.rule,
+            "code": blocker_codes.get(rule.rule, rule.rule),
             "field": rule.field,
             "reason": rule.reason,
             "recoverable": rule.recoverable,

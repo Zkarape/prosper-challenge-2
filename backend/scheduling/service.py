@@ -872,8 +872,11 @@ class ConversationService:
         trace: list[dict[str, Any]],
         patch: dict[str, Any],
     ) -> dict[str, Any]:
+        candidates = self._best_preference_tier(
+            result["valid_candidates"][:10], conversation.patient_request
+        )
         ranked: list[tuple[int, Slot, dict[str, Any]]] = []
-        for rank, candidate in enumerate(result["valid_candidates"][:10]):
+        for rank, candidate in enumerate(candidates):
             for slot in self.availability.find_slots(
                 candidate, self.today_provider() + timedelta(days=1), limit=3
             ):
@@ -886,6 +889,26 @@ class ConversationService:
             conversation.patient_request.primary_priority
             == PreferencePriority.EARLIEST_TIME
         )
+        if not ranked:
+            conversation.pending_offer = None
+            self._trace(
+                trace,
+                "Decision",
+                perf_counter(),
+                "No opening for the best-matching candidates",
+                "Weaker candidates were not used without patient permission",
+                "warning",
+            )
+            return self._base_result(
+                conversation,
+                (
+                    "I couldn't find an opening for your requested provider and location. "
+                    "Please tell me if you would like to change the provider or location."
+                ),
+                patch,
+                engine_result=result,
+                offered_slots=[],
+            )
         selected = ranked[:1] if earliest_first else ranked[:3]
         options = [
             OfferOption(
@@ -926,6 +949,30 @@ class ConversationService:
             engine_result=result,
             offered_slots=[item.value["slot"] for item in options],
         )
+
+    @staticmethod
+    def _best_preference_tier(
+        candidates: list[dict[str, Any]], request: SchedulingRequest
+    ) -> list[dict[str, Any]]:
+        """Prevent an earlier slot from overriding a better patient-choice match."""
+
+        if not candidates:
+            return []
+
+        def preference_key(candidate: dict[str, Any]) -> tuple[bool, bool]:
+            breakdown = candidate["preference_breakdown"]
+            provider_miss = not breakdown["provider_match"]
+            location_miss = not breakdown["location_match"]
+            if request.primary_priority == PreferencePriority.LOCATION:
+                return location_miss, provider_miss
+            return provider_miss, location_miss
+
+        best_key = min(preference_key(candidate) for candidate in candidates)
+        return [
+            candidate
+            for candidate in candidates
+            if preference_key(candidate) == best_key
+        ]
 
     def _offer_alternative(
         self,

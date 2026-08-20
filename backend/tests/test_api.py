@@ -32,6 +32,14 @@ class SchedulingApiTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("evaluation run did not finish")
 
+    def wait_for_scalability_test(self, run_id: str) -> dict:
+        for _ in range(400):
+            payload = self.client.get(f"/api/scalability/runs/{run_id}").json()
+            if payload["status"] != "RUNNING":
+                return payload
+            time.sleep(0.01)
+        self.fail("scalability test did not finish")
+
     def test_health_and_text_turn_contract(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
@@ -151,6 +159,20 @@ class SchedulingApiTests(unittest.TestCase):
         latest = self.client.get("/api/evaluations/runs/latest")
         self.assertEqual(latest.status_code, 200)
         self.assertEqual(latest.json()["run_id"], payload["run_id"])
+
+    def test_100_session_scalability_burst_reports_real_measurements(self):
+        response = self.client.post(
+            "/api/scalability/runs",
+            json={"target_sessions": 100},
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = self.wait_for_scalability_test(response.json()["run_id"])
+        self.assertEqual(payload["status"], "COMPLETED")
+        self.assertEqual(payload["summary"]["submitted_sessions"], 100)
+        self.assertEqual(payload["summary"]["successful_sessions"], 100)
+        self.assertEqual(payload["summary"]["unique_conversation_ids"], 100)
+        self.assertTrue(payload["summary"]["isolated_state"])
+        self.assertIn("OpenAI network latency and provider rate limits", payload["scope"]["excluded"])
 
 
 if __name__ == "__main__":

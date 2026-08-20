@@ -15,6 +15,7 @@ from typing import Literal
 
 from agent_builder import AgentConfigRepository
 from evaluation import EvaluationRunner
+from scaling import ScalabilityRunner
 from scheduling import shared_conversation_service
 
 
@@ -37,6 +38,10 @@ class EvaluationRunRequest(BaseModel):
 
 class AgentConfigRequest(BaseModel):
     config: dict
+
+
+class ScalabilityRunRequest(BaseModel):
+    target_sessions: int = Field(default=100, ge=1, le=100)
 
 
 app = FastAPI(title="Prosper Scheduling API", version="0.1.0")
@@ -62,6 +67,7 @@ evaluation_runner = EvaluationRunner(
     dataset_path=EVALUATION_DATASET_PATH,
 )
 agent_repository = AgentConfigRepository(Path(__file__).parent / "example_flow.json")
+scalability_runner = ScalabilityRunner(catalog=service.catalog)
 
 
 @app.get("/health")
@@ -182,6 +188,31 @@ def get_evaluation_run(run_id: str) -> dict:
     run = evaluation_runner.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="EVALUATION_RUN_NOT_FOUND")
+    return run
+
+
+@app.post("/api/scalability/runs", status_code=202)
+def run_scalability_test(request: ScalabilityRunRequest) -> dict:
+    try:
+        return scalability_runner.start(target_sessions=request.target_sessions)
+    except ValueError as exc:
+        status_code = 409 if str(exc) == "SCALABILITY_TEST_ALREADY_RUNNING" else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.get("/api/scalability/runs/latest")
+def latest_scalability_test() -> dict:
+    run = scalability_runner.latest()
+    if run is None:
+        raise HTTPException(status_code=404, detail="NO_SCALABILITY_RUN")
+    return run
+
+
+@app.get("/api/scalability/runs/{run_id}")
+def get_scalability_test(run_id: str) -> dict:
+    run = scalability_runner.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="SCALABILITY_RUN_NOT_FOUND")
     return run
 
 

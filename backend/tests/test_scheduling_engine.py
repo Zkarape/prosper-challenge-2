@@ -51,7 +51,13 @@ class SchedulingEngineTests(unittest.TestCase):
         )
         self.assertEqual(requested_rule["status"], "FAIL")
         self.assertIn("Richmond Care Center", requested_rule["reason"])
-        self.assertTrue(result["relaxation_candidates"])
+        self.assertEqual(
+            [item["candidate_id"] for item in result["relaxation_candidates"]],
+            ["appt_074:prov_018:loc_001"],
+        )
+        self.assertEqual(
+            result["blockers"][0]["code"], "LOCATION_MISSING_CAPABILITY"
+        )
 
     def test_preferred_invalid_location_allows_ranked_alternative(self):
         result = self.engine.evaluate(self.dental_request("PREFERRED"))

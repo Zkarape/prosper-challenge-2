@@ -60,7 +60,7 @@ edit its identity and instructions, scope its tools, add or remove paths, and pr
 **Save workflow**. Invalid references, duplicate identifiers, missing conditions, or
 illegal end-node paths receive a validation error and are not written.
 
-Then open **Test agent** and start a call. A completed scheduling turn highlights the
+Then open **Scheduling agent** and start a call. A completed scheduling turn highlights the
 workflow nodes whose `runtime_stages` match the real extraction, rules, decision, and
 booking trace. This connects the editable design view to observable runtime evidence
 without pretending that visual prompts control deterministic clinic policy.

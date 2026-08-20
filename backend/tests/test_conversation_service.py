@@ -38,6 +38,8 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertEqual(second["pending_offer"]["kind"], "SLOT_OPTIONS")
         self.assertEqual(len(second["offered_slots"]), 1)
         self.assertIn("earliest opening", second["assistant_message"])
+        self.assertIn("Dr. Wei Lee", second["assistant_message"])
+        self.assertNotIn("Dr. Lucas Singh", second["assistant_message"])
 
         third = self.turn("The first one.")
         self.assertEqual(third["pending_offer"]["kind"], "CONFIRM_BOOKING")

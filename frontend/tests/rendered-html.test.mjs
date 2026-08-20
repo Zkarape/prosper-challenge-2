@@ -23,9 +23,11 @@ test("server-renders the Prosper Agent Studio shell", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Prosper Agent Studio<\/title>/i);
-  assert.match(html, /Test agent/);
+  assert.match(html, /Scheduling agent/);
   assert.match(html, /Agent graph/);
+  assert.match(html, /Engine logic/);
   assert.match(html, /Evaluations/);
+  assert.doesNotMatch(html, /Scale test/);
   assert.match(html, /Loading voice test/);
   assert.match(html, /Context usage/);
   assert.match(html, /Session total/);
@@ -34,12 +36,14 @@ test("server-renders the Prosper Agent Studio shell", async () => {
 });
 
 test("ships product metadata and removes the disposable starter", async () => {
-  const [layout, page, graphEditor, voicePanel, evaluationsPanel, packageJson] = await Promise.all([
+  const [layout, page, graphEditor, voicePanel, evaluationsPanel, enginePanel, styles, packageJson] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/agent-graph-editor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/voice-call-panel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/evaluations-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/engine-logic-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -60,6 +64,11 @@ test("ships product metadata and removes the disposable starter", async () => {
   assert.match(evaluationsPanel, /\/api\/evaluations\/dataset/);
   assert.match(evaluationsPanel, /\/api\/evaluations\/runs/);
   assert.doesNotMatch(evaluationsPanel, /response_requirements|Safety assertions/);
+  assert.match(enginePanel, /The deterministic scheduling engine/);
+  assert.match(enginePanel, /Small context, durable memory/);
+  assert.doesNotMatch(page, /ScalabilityPanel|Scale test/);
+  assert.match(styles, /--purple:\s*#6348ff/i);
+  assert.match(styles, /--pink:\s*#e25dcc/i);
   assert.match(packageJson, /"name": "prosper-agent-studio"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("../public/og.png", import.meta.url));

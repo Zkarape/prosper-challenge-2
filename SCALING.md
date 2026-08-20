@@ -100,6 +100,20 @@ of that call, which is normal.
 7. Add staff authentication before exposing agent or catalog editing APIs. Patient
    callers can continue using opaque conversation IDs without accounts.
 
+## Built-in 100-session capacity check
+
+The **Scale test** tab submits 100 isolated patient sessions as one concurrent
+burst and measures whole-burst time, throughput, p50/p95 latency, failures and
+conversation-state isolation. The backend endpoints are under
+`/api/scalability/runs`.
+
+This benchmark covers the post-transcript application path: local structured
+extraction, validation, state updates, catalog resolution, policy evaluation and
+response routing. It deliberately excludes microphone audio, STT/TTS providers,
+OpenAI network calls and Supabase network capacity. Those integrations need a
+staging load test with production quotas before claiming 100 simultaneous voice
+calls. The Evaluations tab measures decision correctness separately.
+
 For a challenge/demo project, a normal Supabase project is sufficient. Before real
 patient PHI is stored, use a separate production organization, sign Supabase's BAA,
 enable the HIPAA add-on and High Compliance, then enable SSL enforcement, network
