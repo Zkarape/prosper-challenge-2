@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -42,16 +42,25 @@ from pipecat.services.elevenlabs.stt import (
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.turns.user_turn_processor import UserTurnProcessor
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
 from pipecat.workers.runner import WorkerRunner
 
+from observability import configure_logging, get_logger, transcript_fields
 from scheduling import ConversationService, shared_conversation_service
 from scheduling.service import GREETING
 from agent_builder import AgentConfigRepository
 
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
+configure_logging("voice")
+logger = get_logger("voice")
 
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+TURN_END_SILENCE_SECS = 0.45
+TURN_END_FAILSAFE_SECS = 2.5
 
 transport_params = {
     "webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True),
@@ -82,14 +91,23 @@ class SchedulingTurnProcessor(FrameProcessor):
         self.conversation_id = conversation_id
         self.rtvi = None
         self._transcript_segments: list[str] = []
+        self._first_transcript_at: float | None = None
+        self._turn_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue()
+        self._turn_worker_task: asyncio.Task | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
             patient_text = frame.text.strip()
             if patient_text:
+                if not self._transcript_segments:
+                    self._first_transcript_at = time.perf_counter()
                 self._transcript_segments.append(patient_text)
-                logger.info("Buffered patient speech segment: {}", patient_text)
+                logger.bind(
+                    event="voice_transcript_segment",
+                    conversation_id=self.conversation_id,
+                    **transcript_fields(patient_text),
+                ).debug("Buffered patient speech segment")
             await self.push_frame(frame, direction)
             return
 
@@ -99,32 +117,112 @@ class SchedulingTurnProcessor(FrameProcessor):
 
         patient_text = " ".join(self._transcript_segments).strip()
         self._transcript_segments.clear()
+        turn_boundary_ms = (
+            round((time.perf_counter() - self._first_transcript_at) * 1000)
+            if self._first_transcript_at is not None
+            else 0
+        )
+        self._first_transcript_at = None
         if not patient_text:
             return
 
-        logger.info("Processing complete patient turn: {}", patient_text)
+        # Never hold Pipecat's frame processor open while the LLM and database
+        # work runs. Audio, STT and VAD frames must keep flowing. A single
+        # consumer still preserves conversation turn order.
+        await self._turn_queue.put((patient_text, turn_boundary_ms))
+        self._ensure_turn_worker()
+
+    def _ensure_turn_worker(self) -> None:
+        if self._turn_worker_task is not None and not self._turn_worker_task.done():
+            return
+        coroutine = self._run_turns()
+        if getattr(self, "_task_manager", None) is not None:
+            self._turn_worker_task = self.create_task(coroutine, "scheduling-turn-worker")
+        else:
+            # Unit tests can exercise the processor without a Pipecat StartFrame.
+            self._turn_worker_task = asyncio.create_task(coroutine)
+
+    async def _run_turns(self) -> None:
+        while True:
+            patient_text, turn_boundary_ms = await self._turn_queue.get()
+            try:
+                await self._process_complete_turn(patient_text, turn_boundary_ms)
+            finally:
+                self._turn_queue.task_done()
+
+    async def wait_for_pending_turns(self) -> None:
+        """Wait until every completed speech turn has been processed."""
+
+        await self._turn_queue.join()
+
+    async def cleanup(self):
+        if self._turn_worker_task is not None:
+            if getattr(self, "_task_manager", None) is not None:
+                await self.cancel_task(self._turn_worker_task)
+            else:
+                self._turn_worker_task.cancel()
+                try:
+                    await self._turn_worker_task
+                except asyncio.CancelledError:
+                    pass
+            self._turn_worker_task = None
+        await super().cleanup()
+
+    async def _process_complete_turn(
+        self, patient_text: str, turn_boundary_ms: int
+    ) -> None:
+
+        logger.bind(
+            event="voice_turn_committed",
+            conversation_id=self.conversation_id,
+            turn_boundary_ms=turn_boundary_ms,
+            **transcript_fields(patient_text),
+        ).info("Patient voice turn committed")
         try:
+            scheduling_started_at = time.perf_counter()
             result = await asyncio.to_thread(
                 self.service.process_turn,
                 self.conversation_id,
                 patient_text,
             )
-            logger.info(
-                "Voice decision={} fields={} tokens={}",
-                result["engine_result"]["next_action"]["type"],
-                sorted(result["state_patch"]),
-                result["usage"]["input_tokens"] + result["usage"]["output_tokens"],
+            scheduling_ms = round(
+                (time.perf_counter() - scheduling_started_at) * 1000
             )
+            logger.bind(
+                event="voice_turn_completed",
+                conversation_id=self.conversation_id,
+                turn_id=result.get("message_id"),
+                message_number=result.get("message_number"),
+                next_action=result["engine_result"]["next_action"]["type"],
+                changed_fields=sorted(result["state_patch"]),
+                total_tokens=(
+                    result["usage"]["input_tokens"]
+                    + result["usage"]["output_tokens"]
+                ),
+                turn_boundary_ms=turn_boundary_ms,
+                scheduling_ms=scheduling_ms,
+            ).info("Voice scheduling turn completed")
             if self.rtvi is not None:
                 await self.rtvi.send_server_message(
                     {
                         "type": "scheduling_turn",
-                        "payload": {**result, "patient_text": patient_text},
+                        "payload": {
+                            **result,
+                            "patient_text": patient_text,
+                            "voice_timing": {
+                                "turn_boundary_ms": turn_boundary_ms,
+                                "scheduling_ms": scheduling_ms,
+                            },
+                        },
                     }
                 )
             await self.push_frame(TTSSpeakFrame(text=result["assistant_message"]))
         except Exception as exc:
-            logger.exception("Scheduling voice turn failed")
+            logger.bind(
+                event="voice_turn_failed",
+                conversation_id=self.conversation_id,
+                exception_type=type(exc).__name__,
+            ).exception("Scheduling voice turn failed")
             try:
                 await asyncio.to_thread(
                     self.service.finish_conversation,
@@ -132,7 +230,10 @@ class SchedulingTurnProcessor(FrameProcessor):
                     forced_outcome="SYSTEM_ERROR",
                 )
             except Exception:
-                logger.exception("Could not record failed conversation outcome")
+                logger.bind(
+                    event="voice_failure_finalize_failed",
+                    conversation_id=self.conversation_id,
+                ).exception("Could not record failed conversation outcome")
             if self.rtvi is not None:
                 await self.rtvi.send_server_message(
                     {
@@ -186,23 +287,37 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     ).load()
     greeting = agent_config.first_message
     created = service.create_conversation()
-    logger.info("Starting observable scheduler with {}", service.extractor_mode)
+    logger.bind(
+        event="voice_session_started",
+        conversation_id=created["conversation_id"],
+        extractor_mode=service.extractor_mode,
+        storage_mode=service.storage_mode,
+        transport="webrtc",
+    ).info("Voice scheduling session started")
 
     stt = ElevenLabsRealtimeSTTService(
         api_key=elevenlabs_key,
-        commit_strategy=CommitStrategy.VAD,
-        settings=ElevenLabsRealtimeSTTService.Settings(
-            vad_silence_threshold_secs=0.8,
-            min_speech_duration_ms=120,
-            min_silence_duration_ms=350,
-        ),
+        # The local Silero VAD is already the source of truth for turn end.
+        # Commit on its stop frame instead of waiting for a second remote VAD
+        # (which could remain open until the browser muted its audio track).
+        commit_strategy=CommitStrategy.MANUAL,
     )
     vad = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(start_secs=0.15, stop_secs=0.35)
         )
     )
-    turn_detector = UserTurnProcessor(user_turn_stop_timeout=8.0)
+    turn_detector = UserTurnProcessor(
+        user_turn_strategies=UserTurnStrategies(
+            stop=[
+                SpeechTimeoutUserTurnStopStrategy(
+                    user_speech_timeout=TURN_END_SILENCE_SECS,
+                    wait_for_transcript=True,
+                )
+            ]
+        ),
+        user_turn_stop_timeout=TURN_END_FAILSAFE_SECS,
+    )
     scheduler = SchedulingTurnProcessor(service, created["conversation_id"])
     tts = ElevenLabsTTSService(
         api_key=elevenlabs_key,
@@ -227,7 +342,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
-        logger.info("Embedded voice client ready")
+        logger.bind(
+            event="voice_client_ready",
+            conversation_id=created["conversation_id"],
+        ).info("Embedded voice client ready")
         await rtvi.send_server_message(
             {"type": "scheduling_greeting", "payload": {"text": greeting}}
         )
@@ -235,19 +353,26 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info("Voice client disconnected")
+        logger.bind(
+            event="voice_client_disconnected",
+            conversation_id=created["conversation_id"],
+        ).info("Voice client disconnected")
         try:
             evaluation = await asyncio.to_thread(
                 service.finish_conversation, created["conversation_id"]
             )
-            logger.info(
-                "Conversation outcome={} safe={} total_tokens={}",
-                evaluation["outcome"],
-                evaluation["safe"],
-                evaluation["total_tokens"],
-            )
+            logger.bind(
+                event="voice_session_finished",
+                conversation_id=created["conversation_id"],
+                outcome=evaluation["outcome"],
+                safe=evaluation["safe"],
+                total_tokens=evaluation["total_tokens"],
+            ).info("Voice scheduling session finalized")
         except Exception:
-            logger.exception("Could not finalize conversation evaluation")
+            logger.bind(
+                event="voice_session_finalize_failed",
+                conversation_id=created["conversation_id"],
+            ).exception("Could not finalize conversation evaluation")
         await worker.cancel()
 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)

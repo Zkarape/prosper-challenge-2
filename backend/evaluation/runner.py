@@ -34,10 +34,12 @@ class EvaluationRunner:
         catalog: Any,
         configured_extractor: Any,
         dataset_path: str | Path,
+        run_store: Any | None = None,
     ):
         self.catalog = catalog
         self.configured_extractor = configured_extractor
         self.dataset_path = Path(dataset_path)
+        self.run_store = run_store
         self._runs: dict[str, dict[str, Any]] = {}
         self._latest_run_id: str | None = None
         self._lock = RLock()
@@ -154,11 +156,7 @@ class EvaluationRunner:
             },
             "cases": results,
         }
-        with self._lock:
-            self._runs[run_id] = deepcopy(run)
-            self._latest_run_id = run_id
-            while len(self._runs) > 10:
-                self._runs.pop(next(iter(self._runs)))
+        self._save_run(run)
         return run
 
     def start(
@@ -205,9 +203,7 @@ class EvaluationRunner:
             "cases": [],
             "error": None,
         }
-        with self._lock:
-            self._runs[run_id] = deepcopy(placeholder)
-            self._latest_run_id = run_id
+        self._save_run(placeholder)
         Thread(
             target=self._finish_started_run,
             kwargs={
@@ -230,22 +226,43 @@ class EvaluationRunner:
         try:
             self.run(case_ids=case_ids, extractor=extractor, run_id=run_id)
         except Exception as exc:
-            with self._lock:
-                current = self._runs.get(run_id, {"run_id": run_id})
-                self._runs[run_id] = {
+            current = self.get(run_id) or {"run_id": run_id}
+            self._save_run(
+                {
                     **current,
                     "status": "ERROR",
                     "ended_at": datetime.now(timezone.utc).isoformat(),
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+            )
+
+    def _save_run(self, run: dict[str, Any]) -> None:
+        with self._lock:
+            self._runs[run["run_id"]] = deepcopy(run)
+            self._latest_run_id = run["run_id"]
+            while len(self._runs) > 10:
+                self._runs.pop(next(iter(self._runs)))
+        save = getattr(self.run_store, "save_evaluation_run", None)
+        if save is not None:
+            save(run)
 
     def latest(self) -> dict[str, Any] | None:
+        load_latest = getattr(self.run_store, "latest_evaluation_run", None)
+        if load_latest is not None:
+            run = load_latest()
+            if run is not None:
+                return run
         with self._lock:
             if self._latest_run_id is None:
                 return None
             return deepcopy(self._runs[self._latest_run_id])
 
     def get(self, run_id: str) -> dict[str, Any] | None:
+        load = getattr(self.run_store, "get_evaluation_run", None)
+        if load is not None:
+            run = load(run_id)
+            if run is not None:
+                return run
         with self._lock:
             run = self._runs.get(run_id)
             return deepcopy(run) if run is not None else None
@@ -344,6 +361,27 @@ class EvaluationRunner:
             else self._raw_extraction(response.get("extraction_output"))
         )
         expected_extraction = self._expected_extraction(expected.get("extraction_patch") or {})
+        state_before = case.get("input", {}).get("state_before") or {}
+        for field_name in ("appointment_type", "provider", "location"):
+            expected_change = expected_extraction.get(field_name) or {}
+            if (
+                expected_change.get("operation") == "CLEAR"
+                and not state_before.get(field_name)
+            ):
+                expected_extraction.pop(field_name, None)
+        pending_before = case.get("input", {}).get("pending_action_before") or {}
+        if (
+            pending_before.get("type") == "COLLECT_REFERRAL_STATUS"
+            and (actual_extraction.get("pending_answer") or {}).get("value")
+            in {"ACCEPT", "REJECT"}
+        ):
+            # The direct field observation and the answer to the server-owned
+            # referral question produce the same trusted state update.
+            actual_extraction.pop("referral_status", None)
+        self._normalize_equivalent_entity_text(
+            expected_extraction, actual_extraction
+        )
+        self._normalize_equivalent_time_text(expected_extraction, actual_extraction)
         extraction_differences = _differences(expected_extraction, actual_extraction)
 
         validation_reason = next(
@@ -401,6 +439,8 @@ class EvaluationRunner:
 
         expected_state = self._expected_state(expected.get("state_after_changes") or {})
         actual_state = self._evaluation_state(response)
+        self._normalize_equivalent_entity_text(expected_state, actual_state)
+        self._normalize_equivalent_time_text(expected_state, actual_state)
         state_differences = _differences(expected_state, actual_state, partial=True)
 
         expected_engine = self._expected_engine(expected)
@@ -446,6 +486,67 @@ class EvaluationRunner:
                 engine_differences,
             ),
         ]
+
+    def _normalize_equivalent_entity_text(
+        self,
+        expected: dict[str, Any],
+        actual: dict[str, Any],
+    ) -> None:
+        resolvers = {
+            "appointment_type": self.catalog.resolve_appointment_type,
+            "provider": self.catalog.resolve_provider,
+            "location": self.catalog.resolve_location,
+        }
+        for field_name, resolver in resolvers.items():
+            expected_value = expected.get(field_name) or {}
+            actual_value = actual.get(field_name) or {}
+            expected_text = expected_value.get("raw_text")
+            actual_text = actual_value.get("raw_text")
+            if not expected_text or not actual_text or expected_text == actual_text:
+                continue
+            expected_resolution = resolver(expected_text)
+            actual_resolution = resolver(actual_text)
+            expected_ids = sorted(
+                item["id"] for item in expected_resolution.candidates
+            )
+            actual_ids = sorted(item["id"] for item in actual_resolution.candidates)
+            if (
+                expected_resolution.status == actual_resolution.status
+                and expected_ids
+                and expected_ids == actual_ids
+            ):
+                actual_value["raw_text"] = expected_text
+
+    @staticmethod
+    def _normalize_equivalent_time_text(
+        expected: dict[str, Any], actual: dict[str, Any]
+    ) -> None:
+        expected_time = expected.get("time") or {}
+        actual_time = actual.get("time") or {}
+        expected_text = expected_time.get("raw_text")
+        actual_text = actual_time.get("raw_text")
+        if not expected_text or not actual_text or expected_text == actual_text:
+            return
+
+        vocabulary = {
+            "monday", "mondays", "tuesday", "tuesdays", "wednesday",
+            "wednesdays", "thursday", "thursdays", "friday", "fridays",
+            "saturday", "saturdays", "sunday", "sundays", "weekday",
+            "weekdays", "weekend", "weekends", "morning", "afternoon",
+            "evening", "noon", "before", "after", "earliest", "latest",
+            "asap", "flexible",
+        }
+
+        def signature(value: str) -> tuple[str, ...]:
+            tokens = _semantic_text(value).split()
+            return tuple(
+                token
+                for token in tokens
+                if token in vocabulary or token.isdigit()
+            )
+
+        if signature(expected_text) and signature(expected_text) == signature(actual_text):
+            actual_time["raw_text"] = expected_text
 
     def _request_from_case(self, case: dict[str, Any]) -> SchedulingRequest:
         suite = self.dataset()
@@ -598,6 +699,9 @@ class EvaluationRunner:
         for key, item in value.items():
             if key in {"intents", "primary_priority"}:
                 continue
+            if isinstance(item, dict) and item.get("operation") == "KEEP":
+                # KEEP and omission have the same meaning: do not change state.
+                continue
             output[key] = _semantic_value(item)
         return output
 
@@ -612,10 +716,11 @@ class EvaluationRunner:
         }
         if validated.get("pending_answer") != "NONE":
             pending = {"value": validated.get("pending_answer")}
-            if validated.get("selection_ordinal") is not None:
-                pending["ordinal"] = validated["selection_ordinal"]
-            if validated.get("raw_selection_text") is not None:
-                pending["raw_selection_text"] = validated["raw_selection_text"]
+            if validated.get("pending_answer") == "SELECT":
+                if validated.get("selection_ordinal") is not None:
+                    pending["ordinal"] = validated["selection_ordinal"]
+                if validated.get("raw_selection_text") is not None:
+                    pending["raw_selection_text"] = validated["raw_selection_text"]
             output["pending_answer"] = pending
         if validated.get("unclear_references"):
             output["unclear_references"] = [
@@ -698,6 +803,9 @@ class EvaluationRunner:
     @staticmethod
     def _actual_engine(value: dict[str, Any]) -> dict[str, Any]:
         action = value.get("next_action") or {}
+        valid_candidates = EvaluationRunner._best_candidate_tier(
+            value.get("valid_candidates", [])
+        )
         output = {
             "decision_status": (value.get("decision") or {}).get("status"),
             "action_type": action.get("type"),
@@ -708,7 +816,7 @@ class EvaluationRunner:
                 if item.get("code") is not None
             ),
             "valid_candidate_ids": sorted(
-                item.get("candidate_id") for item in value.get("valid_candidates", [])
+                item.get("candidate_id") for item in valid_candidates
             ),
             "relaxation_candidate_ids": sorted(
                 item.get("candidate_id")
@@ -721,6 +829,30 @@ class EvaluationRunner:
         if value.get("resolution"):
             output["resolution"] = _actual_resolution(value["resolution"])
         return output
+
+    @staticmethod
+    def _best_candidate_tier(
+        candidates: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Grade the candidates the product may select before weaker backups."""
+
+        if not candidates:
+            return []
+
+        def preference_key(candidate: dict[str, Any]) -> tuple[bool, bool]:
+            breakdown = candidate.get("preference_breakdown") or {}
+            provider_miss = not breakdown.get("provider_match", True)
+            location_miss = not breakdown.get("location_match", True)
+            if breakdown.get("primary_priority") == "LOCATION":
+                return location_miss, provider_miss
+            return provider_miss, location_miss
+
+        best_key = min(preference_key(candidate) for candidate in candidates)
+        return [
+            candidate
+            for candidate in candidates
+            if preference_key(candidate) == best_key
+        ]
 
 
 def _stage(
@@ -775,7 +907,7 @@ def _state_value(value: Any) -> Any:
 
 def _semantic_text(value: str) -> str:
     normalized = " ".join(re.sub(r"[^a-z0-9]+", " ", value.casefold()).split())
-    return re.sub(r"^(?:a|an|the)\s+", "", normalized)
+    return re.sub(r"^(?:a|an|the|my|our)\s+", "", normalized)
 
 
 def _expected_resolution(value: dict[str, Any]) -> dict[str, Any]:

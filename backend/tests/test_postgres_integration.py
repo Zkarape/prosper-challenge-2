@@ -1,8 +1,10 @@
 from datetime import date
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
 import unittest
+from uuid import uuid4
 
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -73,6 +75,27 @@ class PostgresRuntimeTests(unittest.TestCase):
         self.assertEqual(retried, confirmed)
         self.assertEqual(third_worker.get_conversation(conversation_id).message_number, 3)
         third_worker.store.pool.close()
+
+    def test_evaluation_run_survives_a_new_store_instance(self):
+        first_worker = self.service()
+        run = {
+            "run_id": f"eval_postgres_integration_{uuid4().hex[:8]}",
+            "status": "COMPLETED",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {"case_count": 1, "passed_case_count": 1},
+            "cases": [{"test_case_id": "case_001", "overall_status": "PASS"}],
+        }
+        first_worker.store.save_evaluation_run(run)
+        first_worker.store.pool.close()
+
+        second_worker = self.service()
+        self.assertEqual(
+            second_worker.store.get_evaluation_run(run["run_id"]), run
+        )
+        self.assertEqual(
+            second_worker.store.latest_evaluation_run()["run_id"], run["run_id"]
+        )
+        second_worker.store.pool.close()
 
 
 if __name__ == "__main__":

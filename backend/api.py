@@ -6,20 +6,34 @@ Run from the repository root with ``make api``.
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from agent_builder import AgentConfigRepository
-from evaluation import EvaluationRunner
-from scaling import ScalabilityRunner
-from scheduling import shared_conversation_service
+from observability import (
+    configure_logging,
+    debug_log_api_enabled,
+    get_logger,
+    logging_status,
+    read_logs,
+    redact_text,
+)
 
 
 load_dotenv(Path(__file__).parent / ".env", override=False)
+configure_logging("api")
+api_logger = get_logger("http")
+
+# Configure logging before importing modules that construct long-lived services.
+from agent_builder import AgentConfigRepository
+from evaluation import ContextComparisonRunner, EvaluationRunner
+from scaling import ScalabilityRunner
+from scheduling import shared_conversation_service
 
 
 class TurnRequest(BaseModel):
@@ -44,6 +58,14 @@ class ScalabilityRunRequest(BaseModel):
     target_sessions: int = Field(default=100, ge=1, le=100)
 
 
+class ClientLogEvent(BaseModel):
+    level: Literal["ERROR", "WARNING", "INFO"] = "ERROR"
+    event: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=2000)
+    stack: str | None = Field(default=None, max_length=8000)
+    path: str | None = Field(default=None, max_length=500)
+
+
 app = FastAPI(title="Prosper Scheduling API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +79,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def structured_request_logging(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", "").strip()
+    if not request_id or len(request_id) > 120:
+        request_id = f"req_{uuid4().hex[:16]}"
+    started = perf_counter()
+    path = request.url.path
+    with api_logger.contextualize(request_id=request_id):
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            api_logger.bind(
+                event="http_request_failed",
+                method=request.method,
+                path=path,
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+                exception_type=type(exc).__name__,
+            ).exception("HTTP request failed")
+            raise
+        response.headers["x-request-id"] = request_id
+        if path != "/api/system/logs":
+            level = "warning" if response.status_code >= 400 else "info"
+            api_logger.bind(
+                event="http_request_completed",
+                method=request.method,
+                path=path,
+                status_code=response.status_code,
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            ).log(level.upper(), "HTTP request completed")
+        return response
+
 service = shared_conversation_service()
 EVALUATION_DATASET_PATH = (
     Path(__file__).parent / "tests" / "fixtures" / "context_management_eval.json"
@@ -65,9 +119,24 @@ evaluation_runner = EvaluationRunner(
     catalog=service.catalog,
     configured_extractor=service.extractor,
     dataset_path=EVALUATION_DATASET_PATH,
+    run_store=service.store,
+)
+CONTEXT_COMPARISON_DATASET_PATH = (
+    Path(__file__).parent / "tests" / "fixtures" / "context_strategy_eval.json"
+)
+context_comparison_runner = ContextComparisonRunner(
+    catalog=service.catalog,
+    configured_extractor=service.extractor,
+    dataset_path=CONTEXT_COMPARISON_DATASET_PATH,
+    run_store=service.store,
 )
 agent_repository = AgentConfigRepository(Path(__file__).parent / "example_flow.json")
 scalability_runner = ScalabilityRunner(catalog=service.catalog)
+get_logger("startup").bind(
+    event="api_started",
+    extractor_mode=service.extractor_mode,
+    storage_mode=service.storage_mode,
+).info("Scheduling API initialized")
 
 
 @app.get("/health")
@@ -77,6 +146,46 @@ def health() -> dict:
         "extractor_mode": service.extractor_mode,
         **service.store.health(),
     }
+
+
+@app.get("/api/system/logging")
+def system_logging_status() -> dict:
+    if not debug_log_api_enabled():
+        raise HTTPException(status_code=404, detail="DEBUG_LOG_API_DISABLED")
+    return logging_status()
+
+
+@app.get("/api/system/logs")
+def system_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    process: str | None = Query(default=None, max_length=50),
+    level: str | None = Query(default=None, max_length=20),
+    search: str | None = Query(default=None, max_length=200),
+) -> dict:
+    if not debug_log_api_enabled():
+        raise HTTPException(status_code=404, detail="DEBUG_LOG_API_DISABLED")
+    return {
+        "events": read_logs(
+            limit=limit,
+            process=process,
+            level=level,
+            search=search,
+        ),
+        "logging": logging_status(),
+    }
+
+
+@app.post("/api/system/client-events", status_code=202)
+def record_client_event(value: ClientLogEvent) -> dict:
+    if not debug_log_api_enabled():
+        raise HTTPException(status_code=404, detail="DEBUG_LOG_API_DISABLED")
+    client_logger = get_logger("frontend").bind(
+        event=redact_text(value.event, limit=80),
+        path=redact_text(value.path or "", limit=500),
+        client_stack=redact_text(value.stack or "", limit=4000) or None,
+    )
+    client_logger.log(value.level, redact_text(value.message, limit=1000))
+    return {"accepted": True}
 
 
 @app.post("/api/conversations", status_code=201)
@@ -188,6 +297,35 @@ def get_evaluation_run(run_id: str) -> dict:
     run = evaluation_runner.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="EVALUATION_RUN_NOT_FOUND")
+    return run
+
+
+@app.get("/api/evaluations/context-comparison/dataset")
+def context_comparison_dataset() -> dict:
+    return context_comparison_runner.dataset()
+
+
+@app.post("/api/evaluations/context-comparison/runs", status_code=202)
+def run_context_comparison() -> dict:
+    try:
+        return context_comparison_runner.start()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/evaluations/context-comparison/runs/latest")
+def latest_context_comparison() -> dict:
+    run = context_comparison_runner.latest()
+    if run is None:
+        raise HTTPException(status_code=404, detail="NO_CONTEXT_COMPARISON_RUN")
+    return run
+
+
+@app.get("/api/evaluations/context-comparison/runs/{run_id}")
+def get_context_comparison(run_id: str) -> dict:
+    run = context_comparison_runner.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="CONTEXT_COMPARISON_NOT_FOUND")
     return run
 
 

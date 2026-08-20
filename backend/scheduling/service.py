@@ -9,12 +9,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from conversation import OfferKind, OfferOption, PendingOffer, UsageEvent, UsageLedger
 from extraction import ExtractionValidator, OpenAIExtractor, SemanticValidationError
+from observability import get_logger, transcript_fields
 
 from .availability import MockAvailability, MockBookingService, Slot
 from .catalog import Catalog
@@ -29,6 +31,7 @@ from .storage import (
 
 
 GREETING = "Hi, I’m the clinic’s scheduling assistant. How can I help you today?"
+service_logger = get_logger("scheduling")
 
 
 @dataclass
@@ -71,7 +74,7 @@ class ConversationService:
         self.catalog = catalog
         self.engine = SchedulingEngine(catalog)
         self.extractor = extractor or RuleBasedExtractor(catalog)
-        self.validator = ExtractionValidator()
+        self.validator = ExtractionValidator(catalog)
         self.store = store or InMemoryConversationStore()
         self.availability = availability or MockAvailability(
             catalog,
@@ -116,6 +119,12 @@ class ConversationService:
         request = SchedulingRequest()
         conversation = Conversation(patient_request=request)
         self.store.create(conversation, catalog_hash=self.catalog.version)
+        service_logger.bind(
+            event="conversation_created",
+            conversation_id=request.conversation_id,
+            extractor_mode=self.extractor_mode,
+            storage_mode=self.storage_mode,
+        ).info("Scheduling conversation created")
         return {
             "conversation_id": request.conversation_id,
             "assistant_message": GREETING,
@@ -140,6 +149,12 @@ class ConversationService:
 
         conversation = self.get_conversation(conversation_id)
         if conversation.status != "ACTIVE":
+            service_logger.bind(
+                event="conversation_finish_replayed",
+                conversation_id=conversation_id,
+                status=conversation.status,
+                outcome=conversation.outcome,
+            ).debug("Conversation was already finalized")
             return self.store.conversation_evaluation(conversation_id)
 
         if forced_outcome == "SYSTEM_ERROR":
@@ -170,7 +185,17 @@ class ConversationService:
             outcome=outcome,
             safe=safe,
         )
-        return self.store.conversation_evaluation(conversation_id)
+        evaluation = self.store.conversation_evaluation(conversation_id)
+        service_logger.bind(
+            event="conversation_finished",
+            conversation_id=conversation_id,
+            status=status,
+            outcome=outcome,
+            safe=safe,
+            message_count=conversation.message_number,
+            total_tokens=evaluation.get("total_tokens"),
+        ).info("Scheduling conversation finalized")
+        return evaluation
 
     def conversation_evaluation(self, conversation_id: str) -> dict[str, Any]:
         return self.store.conversation_evaluation(conversation_id)
@@ -201,6 +226,14 @@ class ConversationService:
                     utterance,
                     message_id=message_id,
                 )
+        except KeyError as exc:
+            service_logger.bind(
+                event="turn_rejected",
+                conversation_id=conversation_id,
+                turn_id=message_id,
+                error_code=str(exc.args[0]) if exc.args else "NOT_FOUND",
+            ).warning("Scheduling turn rejected")
+            raise
         except ValueError as exc:
             # A retry of the final message must remain idempotent even though
             # the successful booking has already closed the conversation.
@@ -208,7 +241,27 @@ class ConversationService:
                 conversation = self.get_conversation(conversation_id)
                 previous = conversation.processed_messages.get(message_id)
                 if previous is not None:
+                    service_logger.bind(
+                        event="turn_replayed",
+                        conversation_id=conversation_id,
+                        turn_id=message_id,
+                        reason="conversation_closed",
+                    ).info("Returned an idempotent turn result")
                     return previous
+            service_logger.bind(
+                event="turn_rejected",
+                conversation_id=conversation_id,
+                turn_id=message_id,
+                error_code=str(exc),
+            ).warning("Scheduling turn rejected")
+            raise
+        except Exception as exc:
+            service_logger.bind(
+                event="turn_failed",
+                conversation_id=conversation_id,
+                turn_id=message_id,
+                exception_type=type(exc).__name__,
+            ).exception("Scheduling turn failed")
             raise
 
     def _process_turn_locked(
@@ -224,18 +277,54 @@ class ConversationService:
             raise ValueError("UTTERANCE_REQUIRED")
         message_id = message_id or f"message_{uuid4().hex[:12]}"
         if message_id in conversation.processed_messages:
+            service_logger.bind(
+                event="turn_replayed",
+                conversation_id=conversation_id,
+                turn_id=message_id,
+                reason="duplicate_message_id",
+            ).info("Returned an idempotent turn result")
             return conversation.processed_messages[message_id]
 
         conversation.message_number += 1
         started = perf_counter()
+        service_logger.bind(
+            event="turn_started",
+            conversation_id=conversation_id,
+            turn_id=message_id,
+            message_number=conversation.message_number,
+            pending_offer_kind=(
+                conversation.pending_offer.kind.value
+                if conversation.pending_offer is not None
+                else None
+            ),
+            **transcript_fields(clean_utterance),
+        ).info("Scheduling turn started")
         trace: list[dict[str, Any]] = []
+        direct_pending_answer = self._match_direct_pending_answer(
+            conversation.pending_offer, clean_utterance
+        )
         recovery_option = self._match_recovery_option(
             conversation.pending_offer, clean_utterance
         )
         extraction_result = None
         validated = None
         turn_usage_events: list[UsageEvent] = []
-        if recovery_option is not None:
+        if direct_pending_answer is not None:
+            validated = direct_pending_answer
+            self._trace(
+                trace,
+                "Extract",
+                perf_counter(),
+                "Exact offer answer matched",
+                "A bounded yes, no, or ordinal reply was resolved without an LLM call",
+                "success",
+                {
+                    "pending_answer": validated.pending_answer,
+                    "selection_ordinal": validated.selection_ordinal,
+                },
+            )
+            result = self._handle_pending_answer(conversation, validated, trace)
+        elif recovery_option is not None:
             self._trace(
                 trace,
                 "Extract",
@@ -259,7 +348,7 @@ class ConversationService:
             if validated is None:
                 result = self._safe_extraction_failure(conversation, trace)
             elif validated.unclear_references or validated.pending_answer == "UNCLEAR":
-                result = self._clarify_reference(conversation, trace)
+                result = self._clarify_reference(conversation, trace, validated)
             elif validated.pending_answer != "NONE":
                 recovery_selection = (
                     conversation.pending_offer is not None
@@ -297,7 +386,18 @@ class ConversationService:
                     after = conversation.patient_request.fingerprint()
                     if before != after:
                         conversation.pending_offer = None
-                    result = self._evaluate_request(conversation, trace, validated.patch)
+                    if (
+                        "ASK_INFORMATION" in observed
+                        and conversation.patient_request.current_goal
+                        == "BOOK_APPOINTMENT"
+                    ):
+                        result = self._answer_information_and_keep_booking(
+                            conversation, trace, validated.patch
+                        )
+                    else:
+                        result = self._evaluate_request(
+                            conversation, trace, validated.patch
+                        )
 
         telemetry = extraction_result.telemetry.to_dict() if extraction_result else {}
         total_input_tokens = sum(item.input_tokens for item in turn_usage_events)
@@ -360,6 +460,29 @@ class ConversationService:
         if len(conversation.processed_messages) > 100:
             oldest = next(iter(conversation.processed_messages))
             conversation.processed_messages.pop(oldest, None)
+        engine_result = result.get("engine_result") or {}
+        decision = engine_result.get("decision") or {}
+        next_action = engine_result.get("next_action") or {}
+        service_logger.bind(
+            event="turn_completed",
+            conversation_id=conversation_id,
+            turn_id=message_id,
+            message_number=conversation.message_number,
+            duration_ms=elapsed_ms,
+            decision_status=decision.get("status"),
+            next_action=next_action.get("type"),
+            trace_stages=[item.get("stage") for item in trace],
+            pending_offer_kind=(
+                conversation.pending_offer.kind.value
+                if conversation.pending_offer is not None
+                else None
+            ),
+            booking_status=(conversation.booking or {}).get("status"),
+            model_call_count=len(turn_usage_events),
+            input_tokens=total_input_tokens,
+            cached_input_tokens=total_cached_tokens,
+            output_tokens=total_output_tokens,
+        ).info("Scheduling turn completed")
         return result
 
     def _extract_and_validate(
@@ -384,9 +507,17 @@ class ConversationService:
                         if conversation.pending_offer
                         else None
                     ),
+                    conversation_history=self._conversation_history(conversation),
                     corrective_feedback=corrective_feedback,
                 )
             except Exception as exc:
+                service_logger.bind(
+                    event="extraction_failed",
+                    conversation_id=conversation.patient_request.conversation_id,
+                    turn_id=turn_id,
+                    attempt=attempt + 1,
+                    exception_type=type(exc).__name__,
+                ).exception("Patient request extraction failed")
                 self._trace(
                     trace,
                     "Extract",
@@ -430,7 +561,21 @@ class ConversationService:
             except SemanticValidationError as exc:
                 corrective_feedback = str(exc)
                 if attempt == 0:
+                    service_logger.bind(
+                        event="extraction_retry",
+                        conversation_id=conversation.patient_request.conversation_id,
+                        turn_id=turn_id,
+                        attempt=attempt + 1,
+                        validation_error=type(exc).__name__,
+                    ).warning("Extraction validation requested a retry")
                     continue
+                service_logger.bind(
+                    event="extraction_rejected",
+                    conversation_id=conversation.patient_request.conversation_id,
+                    turn_id=turn_id,
+                    attempts=attempt + 1,
+                    validation_error=type(exc).__name__,
+                ).warning("Extraction was rejected after retry")
                 self._trace(
                     trace,
                     "Extract",
@@ -442,6 +587,31 @@ class ConversationService:
                 )
                 return usage_events, last_result, None
         return usage_events, last_result, None
+
+    @staticmethod
+    def _conversation_history(
+        conversation: Conversation,
+    ) -> list[dict[str, str]]:
+        """Build committed dialogue for the explicit full-history experiment.
+
+        Compact extraction ignores this list. Building it in the shared turn
+        service keeps the benchmark's conversation path identical between the
+        two context strategies.
+        """
+
+        history: list[dict[str, str]] = [{"role": "assistant", "text": GREETING}]
+        turns = sorted(
+            conversation.processed_messages.values(),
+            key=lambda item: int(item.get("message_number") or 0),
+        )
+        for turn in turns:
+            patient_text = str(turn.get("patient_text") or "").strip()
+            assistant_text = str(turn.get("assistant_message") or "").strip()
+            if patient_text:
+                history.append({"role": "patient", "text": patient_text})
+            if assistant_text:
+                history.append({"role": "assistant", "text": assistant_text})
+        return history
 
     def _handle_pending_answer(
         self, conversation: Conversation, validated: Any, trace: list[dict[str, Any]]
@@ -464,9 +634,16 @@ class ConversationService:
             return self._accept_field_option(conversation, option, trace)
         if answer == "REJECT":
             for option in offer.options:
-                conversation.rejected_alternatives.add(option.option_id)
+                rejected_id = option.option_id
+                if offer.kind == OfferKind.ALTERNATIVE_LOCATION:
+                    rejected_id = (option.value.get("candidate") or {}).get(
+                        "candidate_id", rejected_id
+                    )
+                conversation.rejected_alternatives.add(rejected_id)
             conversation.pending_offer = None
             self._trace(trace, "Decision", perf_counter(), "Offer declined", "No booking write was attempted", "active")
+            if offer.kind == OfferKind.ALTERNATIVE_LOCATION:
+                return self._evaluate_request(conversation, trace, {})
             return self._base_result(
                 conversation,
                 "No problem. Nothing was booked. Tell me what you’d like to change.",
@@ -496,6 +673,10 @@ class ConversationService:
         if offer.kind == OfferKind.CONFIRM_BOOKING:
             return self._confirm_booking(conversation, offer, option, trace)
         if offer.kind == OfferKind.FIELD_OPTIONS:
+            if option.value.get("information_provider_id"):
+                return self._answer_selected_provider_information(
+                    conversation, option, trace
+                )
             return self._accept_field_option(conversation, option, trace)
         return self._clarify_reference(conversation, trace)
 
@@ -512,6 +693,58 @@ class ConversationService:
         for index, pattern in patterns:
             if re.search(pattern, patient_text, re.I) and index < len(offer.options):
                 return offer.options[index]
+        return None
+
+    @staticmethod
+    def _match_direct_pending_answer(
+        offer: PendingOffer | None, patient_text: str
+    ) -> Any | None:
+        """Resolve only bounded replies whose meaning cannot depend on prose.
+
+        Mixed answers such as "no, Monday instead" deliberately fall through to
+        structured extraction so the replacement fact is not discarded.
+        """
+
+        if offer is None:
+            return None
+        normalized = " ".join(
+            re.sub(r"[^a-z0-9]+", " ", patient_text.casefold()).split()
+        )
+        ordinal_patterns = {
+            1: r"(?:the )?(?:first|1st|1|one)(?: one| option)?",
+            2: r"(?:the )?(?:second|2nd|2|two)(?: one| option)?",
+            3: r"(?:the )?(?:third|3rd|3|three)(?: one| option)?",
+        }
+        for ordinal, pattern in ordinal_patterns.items():
+            if re.fullmatch(pattern, normalized):
+                return SimpleNamespace(
+                    patch={},
+                    pending_answer="SELECT",
+                    selection_ordinal=ordinal,
+                    raw_selection_text=patient_text.strip(),
+                    unclear_references=[],
+                )
+        if re.fullmatch(
+            r"(?:yes|yeah|yep|sure|okay|ok|correct|that works|works|confirm|book it)",
+            normalized,
+        ):
+            return SimpleNamespace(
+                patch={},
+                pending_answer="ACCEPT",
+                selection_ordinal=None,
+                raw_selection_text=None,
+                unclear_references=[],
+            )
+        if re.fullmatch(
+            r"(?:no|nope|no thanks|do not book it|don t book it)", normalized
+        ):
+            return SimpleNamespace(
+                patch={},
+                pending_answer="REJECT",
+                selection_ordinal=None,
+                raw_selection_text=None,
+                unclear_references=[],
+            )
         return None
 
     @staticmethod
@@ -536,6 +769,17 @@ class ConversationService:
         if offer is None or offer.kind != OfferKind.FIELD_OPTIONS:
             return False
         option = self._selected_offer_option(offer, validated)
+        if (
+            option is None
+            and offer.options
+            and offer.options[0].option_id == "referral_on_file"
+            and validated.pending_answer in {"ACCEPT", "REJECT"}
+        ):
+            option = (
+                offer.options[0]
+                if validated.pending_answer == "ACCEPT"
+                else offer.options[1]
+            )
         if option is None and validated.pending_answer == "ACCEPT" and len(offer.options) == 1:
             option = offer.options[0]
         if option is None:
@@ -681,6 +925,13 @@ class ConversationService:
         except ValueError as exc:
             if str(exc) != "SLOT_NO_LONGER_AVAILABLE":
                 raise
+            service_logger.bind(
+                event="booking_conflict",
+                conversation_id=conversation.patient_request.conversation_id,
+                offer_id=offer.offer_id,
+                candidate_id=candidate.get("candidate_id"),
+                slot_id=slot.id,
+            ).warning("Selected appointment slot was no longer available")
             conversation.pending_offer = None
             self._trace(
                 trace,
@@ -696,6 +947,13 @@ class ConversationService:
             or not booking.get("booking_id")
             or booking.get("offer_id") != offer.offer_id
         ):
+            service_logger.bind(
+                event="booking_confirmation_invalid",
+                conversation_id=conversation.patient_request.conversation_id,
+                offer_id=offer.offer_id,
+                candidate_id=candidate.get("candidate_id"),
+                slot_id=slot.id,
+            ).error("Booking service returned an invalid confirmation")
             raise ValueError("BOOKING_SERVICE_DID_NOT_CONFIRM")
         conversation.booking = booking
         conversation.pending_offer = None
@@ -703,6 +961,14 @@ class ConversationService:
         self._complete_conversation_object(
             conversation, outcome="BOOKING_CONFIRMED"
         )
+        service_logger.bind(
+            event="booking_confirmed",
+            conversation_id=conversation.patient_request.conversation_id,
+            offer_id=offer.offer_id,
+            booking_id=booking["booking_id"],
+            candidate_id=candidate.get("candidate_id"),
+            slot_id=slot.id,
+        ).info("Appointment booking confirmed")
         self._trace(trace, "Book", stage, "Booking system confirmed the appointment", booking["booking_id"], "success", {"booking_id": booking["booking_id"], "offer_id": offer.offer_id})
         self._trace(trace, "Decision", perf_counter(), "Report confirmed booking", "Success came from the booking system", "active")
         return self._base_result(
@@ -798,7 +1064,11 @@ class ConversationService:
             return self._offer_slots(conversation, engine_result, trace, patch)
         if action == "OFFER_ALTERNATIVES":
             return self._offer_alternative(conversation, engine_result, trace, patch)
-        if action in {"ASK_REQUIRED_FIELD", "ASK_CLARIFICATION"}:
+        if action in {
+            "ASK_REQUIRED_FIELD",
+            "ASK_CLARIFICATION",
+            "ASK_CONSTRAINT_FLEXIBILITY",
+        }:
             return self._ask_engine_question(conversation, engine_result, trace, patch)
         if self._can_offer_ineligible_patient_recovery(engine_result):
             return self._offer_ineligible_patient_recovery(
@@ -813,7 +1083,7 @@ class ConversationService:
     @staticmethod
     def _can_offer_ineligible_patient_recovery(result: dict[str, Any]) -> bool:
         return any(
-            blocker.get("code") == "APPOINTMENT_ALLOWS_NEW_PATIENTS"
+            blocker.get("code") == "APPOINTMENT_EXISTING_PATIENT_ONLY"
             for blocker in result["blockers"]
         )
 
@@ -988,11 +1258,19 @@ class ConversationService:
         ]
         if not alternatives:
             conversation.pending_offer = None
+            exhausted_result = {
+                **result,
+                "decision": {"status": "NO_MATCH"},
+                "valid_candidates": [],
+                "relaxation_candidates": [],
+                "next_action": {"type": "CANNOT_SCHEDULE"},
+            }
+            conversation.last_result = exhausted_result
             return self._base_result(
                 conversation,
                 "I don’t have another safe alternative to offer. A staff member can help with next steps.",
                 patch,
-                engine_result=result,
+                engine_result=exhausted_result,
             )
         alternative = alternatives[0]
         option = OfferOption(
@@ -1037,6 +1315,39 @@ class ConversationService:
                 OfferOption("referral_not_on_file", "no referral is on file", {"patch": {"referral_status": {"operation": "SET", "value": "NOT_ON_FILE"}}}),
             ]
             message = "Is there a referral on file for this appointment?"
+        elif result["next_action"]["type"] == "ASK_CONSTRAINT_FLEXIBILITY":
+            options = [
+                OfferOption(
+                    "allow_another_provider",
+                    "another provider is okay",
+                    {"patch": {"provider": {"operation": "CLEAR"}}},
+                )
+            ]
+            provider = resolution.get("selected") or {}
+            provider_name = provider.get("name", "That provider")
+            message = (
+                f"{provider_name} is not accepting new patients. "
+                "Would another cardiologist be okay?"
+            )
+        elif result["next_action"].get("options"):
+            for location in result["next_action"]["options"][:8]:
+                options.append(
+                    OfferOption(
+                        location["id"],
+                        location["name"],
+                        {
+                            "patch": {
+                                "location": {
+                                    "operation": "SET",
+                                    "raw_text": location["name"],
+                                    "requirement": "UNSPECIFIED",
+                                }
+                            }
+                        },
+                    )
+                )
+            labels = ", ".join(item.label for item in options)
+            message = f"Which location works for you: {labels}?"
         elif resolution.get("status") == "AMBIGUOUS":
             for index, candidate in enumerate(resolution.get("candidates", [])[:3]):
                 options.append(
@@ -1080,6 +1391,54 @@ class ConversationService:
                 provider = self.catalog.providers[found.selected["id"]]
                 locations = [self.catalog.locations[item]["name"] for item in provider["location_ids"]]
                 message = f"{provider['name']} practices at {', '.join(locations)}."
+            elif found.status == "AMBIGUOUS":
+                options = [
+                    OfferOption(
+                        option_id=item["id"],
+                        label=f"{item['specialty']} {item['name']}",
+                        value={"information_provider_id": item["id"]},
+                    )
+                    for item in found.candidates
+                ]
+                conversation.pending_offer = PendingOffer(
+                    kind=OfferKind.FIELD_OPTIONS,
+                    request_fingerprint=conversation.patient_request.fingerprint(),
+                    catalog_version=self.catalog.version,
+                    options=options,
+                )
+                specialties = " or ".join(
+                    item["specialty"] for item in found.candidates
+                )
+                message = (
+                    f"I found two providers named {request.provider.raw_text}: "
+                    f"{specialties}. Which one do you mean?"
+                )
+                engine_result = {
+                    "catalog_version": self.catalog.version,
+                    "request_fingerprint": request.fingerprint(),
+                    "resolution": resolution,
+                    "decision": {"status": "NEEDS_INFORMATION"},
+                    "blockers": [],
+                    "rule_results": [],
+                    "valid_candidates": [],
+                    "relaxation_candidates": [],
+                    "next_action": {
+                        "type": "ASK_CLARIFICATION",
+                        "fields": ["provider"],
+                    },
+                }
+                conversation.last_result = engine_result
+                self._trace(
+                    trace,
+                    "Decision",
+                    perf_counter(),
+                    "Clarify duplicate provider",
+                    "Catalog resolution returned more than one exact provider",
+                    "active",
+                )
+                return self._base_result(
+                    conversation, message, patch, engine_result=engine_result
+                )
         elif request.location:
             found = self.catalog.resolve_location(request.location.raw_text)
             resolution["location"] = found.to_dict()
@@ -1108,13 +1467,174 @@ class ConversationService:
         self._trace(trace, "Decision", perf_counter(), "Answer from catalog data", "No catalog list was sent to the LLM", "active")
         return self._base_result(conversation, message, patch, engine_result=engine_result)
 
+    def _answer_information_and_keep_booking(
+        self,
+        conversation: Conversation,
+        trace: list[dict[str, Any]],
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Answer the question without losing the booking facts from this turn."""
+
+        request = conversation.patient_request
+        message = "I saved your booking request."
+        if request.location:
+            found = self.catalog.resolve_location(request.location.raw_text)
+            if found.status == "RESOLVED":
+                location = self.catalog.locations[found.selected["id"]]
+                message = (
+                    f"{location['name']} is open {location['hours']}. "
+                    "I also saved your booking request."
+                )
+        elif request.provider:
+            found = self.catalog.resolve_provider(request.provider.raw_text)
+            if found.status == "RESOLVED":
+                provider = self.catalog.providers[found.selected["id"]]
+                locations = [
+                    self.catalog.locations[item]["name"]
+                    for item in provider["location_ids"]
+                ]
+                message = (
+                    f"{provider['name']} practices at {', '.join(locations)}. "
+                    "I also saved your booking request."
+                )
+        elif request.appointment_type:
+            found = self.catalog.resolve_appointment_type(
+                request.appointment_type.raw_text
+            )
+            if found.status == "RESOLVED":
+                appointment = self.catalog.appointment_types[found.selected["id"]]
+                message = (
+                    f"{appointment['name']} takes {appointment['duration_min']} minutes. "
+                    "I also saved your booking request."
+                )
+
+        engine_result = self.engine.evaluate(request)
+        engine_result = {
+            **engine_result,
+            "decision": {"status": "INFORMATION_AND_BOOKING_ACTIVE"},
+            "next_action": {"type": "ANSWER_INFORMATION"},
+        }
+        conversation.last_result = engine_result
+        conversation.pending_offer = None
+        self._trace(
+            trace,
+            "Decision",
+            perf_counter(),
+            "Answer information and preserve booking",
+            "Both patient intents remain active",
+            "active",
+        )
+        return self._base_result(
+            conversation, message, patch, engine_result=engine_result
+        )
+
+    def _answer_selected_provider_information(
+        self,
+        conversation: Conversation,
+        option: OfferOption,
+        trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        provider_id = option.value["information_provider_id"]
+        provider = self.catalog.providers.get(provider_id)
+        if provider is None:
+            conversation.pending_offer = None
+            return self._clarify_reference(conversation, trace)
+
+        locations = [
+            self.catalog.locations[item]["name"] for item in provider["location_ids"]
+        ]
+        selected = {
+            "id": provider["id"],
+            "name": provider["name"],
+            "specialty": provider["specialty"],
+            "location_ids": provider["location_ids"],
+        }
+        engine_result = {
+            "catalog_version": self.catalog.version,
+            "request_fingerprint": conversation.patient_request.fingerprint(),
+            "resolution": {
+                "provider": {
+                    "status": "RESOLVED",
+                    "query": provider["name"],
+                    "selected": selected,
+                    "candidates": [selected],
+                    "match_method": "PATIENT_SELECTED_CATALOG_OPTION",
+                }
+            },
+            "decision": {"status": "INFORMATION_ANSWERED"},
+            "blockers": [],
+            "rule_results": [],
+            "valid_candidates": [],
+            "relaxation_candidates": [],
+            "next_action": {"type": "ANSWER_INFORMATION"},
+        }
+        conversation.pending_offer = None
+        conversation.last_result = engine_result
+        self._trace(
+            trace,
+            "Decision",
+            perf_counter(),
+            "Answer selected provider information",
+            "The patient selected a server-owned catalog option",
+            "active",
+        )
+        return self._base_result(
+            conversation,
+            (
+                f"{provider['name']} in {provider['specialty']} practices at "
+                f"{', '.join(locations)}."
+            ),
+            {},
+            engine_result=engine_result,
+        )
+
     def _safe_extraction_failure(self, conversation: Conversation, trace: list[dict[str, Any]]) -> dict[str, Any]:
         self._trace(trace, "Decision", perf_counter(), "Ask for clarification", "Patient request was not changed", "active")
         return self._base_result(conversation, "Sorry, I didn’t understand that safely. Could you say it another way?", {})
 
-    def _clarify_reference(self, conversation: Conversation, trace: list[dict[str, Any]]) -> dict[str, Any]:
+    def _clarify_reference(
+        self,
+        conversation: Conversation,
+        trace: list[dict[str, Any]],
+        validated: Any | None = None,
+    ) -> dict[str, Any]:
         self._trace(trace, "Decision", perf_counter(), "Clarify the reference", "No option or booking was guessed", "active")
-        return self._base_result(conversation, "I’m not sure what that refers to. Could you name the option or detail you mean?", {})
+        if validated is None:
+            return self._base_result(
+                conversation,
+                "I’m not sure what that refers to. Could you name the option or detail you mean?",
+                {},
+            )
+        possible_fields = [
+            item.get("possible_field")
+            for item in validated.unclear_references
+            if item.get("possible_field")
+        ]
+        field_name = possible_fields[0] if possible_fields else "pending_answer"
+        if field_name == "appointment_type":
+            message = "I heard MRI, but not the body area clearly. Could you repeat it?"
+        elif field_name == "pending_answer":
+            message = "I heard yes or no, but there is no current question to apply it to. What would you like to do?"
+        else:
+            message = f"I’m not sure what you meant for {field_name.replace('_', ' ')}. Could you clarify?"
+        engine_result = {
+            "catalog_version": self.catalog.version,
+            "request_fingerprint": conversation.patient_request.fingerprint(),
+            "resolution": {},
+            "decision": {"status": "NEEDS_INFORMATION"},
+            "blockers": [],
+            "rule_results": [],
+            "valid_candidates": [],
+            "relaxation_candidates": [],
+            "next_action": {
+                "type": "ASK_CLARIFICATION",
+                "fields": [field_name],
+            },
+        }
+        conversation.last_result = engine_result
+        return self._base_result(
+            conversation, message, {}, engine_result=engine_result
+        )
 
     def _clarify_mixed_answer(self, conversation: Conversation, trace: list[dict[str, Any]]) -> dict[str, Any]:
         self._trace(trace, "Decision", perf_counter(), "Clarify answer and change", "No pending offer was accepted", "active")

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { PipecatClient, RTVIEvent, type TransportState } from "@pipecat-ai/client-js";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PipecatClient, RTVIEvent, type TranscriptData, type TransportState } from "@pipecat-ai/client-js";
 import {
   PipecatClientAudio,
   PipecatClientMicToggle,
@@ -56,6 +56,8 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
   const state = usePipecatClientTransportState();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const finalTranscriptSegments = useRef<string[]>([]);
+  const interimTranscript = useRef("");
   const connected = state === "ready" || state === "connected";
   const busy = ["authenticating", "authenticated", "connecting", "disconnecting"].includes(state);
 
@@ -78,8 +80,10 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
         && typeof payload.assistant_message === "string"
       ) {
         const number = payload.message_number;
+        finalTranscriptSegments.current = [];
+        interimTranscript.current = "";
         setMessages((existing) => [
-          ...existing.filter((item) => !item.id.endsWith(`-${number}`)),
+          ...existing.filter((item) => item.id !== "patient-live" && !item.id.endsWith(`-${number}`)),
           { id: `patient-${number}`, role: "user", text: payload.patient_text as string },
           { id: `assistant-${number}`, role: "assistant", text: payload.assistant_message as string },
         ]);
@@ -92,10 +96,43 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
 
   useRTVIClientEvent(RTVIEvent.ServerMessage, handleServerMessage);
 
+  const handleUserTranscript = useCallback((transcript: TranscriptData) => {
+    const text = transcript.text.trim();
+    if (!text) return;
+
+    if (transcript.final) {
+      const accumulated = finalTranscriptSegments.current.join(" ");
+      if (!accumulated) {
+        finalTranscriptSegments.current = [text];
+      } else if (text.startsWith(accumulated)) {
+        finalTranscriptSegments.current = [text];
+      } else if (!accumulated.endsWith(text)) {
+        finalTranscriptSegments.current.push(text);
+      }
+      interimTranscript.current = "";
+    } else {
+      interimTranscript.current = text;
+    }
+
+    const visibleText = [
+      ...finalTranscriptSegments.current,
+      interimTranscript.current,
+    ].filter(Boolean).join(" ");
+
+    setMessages((existing) => [
+      ...existing.filter((item) => item.id !== "patient-live"),
+      { id: "patient-live", role: "user", text: visibleText },
+    ]);
+  }, []);
+
+  useRTVIClientEvent(RTVIEvent.UserTranscript, handleUserTranscript);
+
   async function startCall() {
     if (!client || busy || connected) return;
     setError(null);
     setMessages([]);
+    finalTranscriptSegments.current = [];
+    interimTranscript.current = "";
     try {
       await client.initDevices();
       await client.startBotAndConnect({

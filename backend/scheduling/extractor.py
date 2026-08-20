@@ -42,9 +42,10 @@ class RuleBasedExtractor:
         *,
         patient_request: dict[str, Any] | None = None,
         pending_offer: dict[str, Any] | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
         corrective_feedback: str | None = None,
     ) -> ExtractionResult:
-        del corrective_feedback
+        del corrective_feedback, conversation_history
         if patient_text is None:
             raise ValueError("patient_text is required")
         started = perf_counter()
@@ -66,7 +67,11 @@ class RuleBasedExtractor:
             wire["pending_answer"] = pending_answer
             return self._result(wire, started)
 
-        status_match = re.search(r"\b(new patient|first visit|never been)\b", patient_text, re.I)
+        status_match = re.search(
+            r"\b(new patient|first visit|never been|i(?:'m| am) new)\b",
+            patient_text,
+            re.I,
+        )
         if status_match:
             self._set_status(wire, current, "patient_status", "NEW", status_match.group(0))
         else:
@@ -313,6 +318,10 @@ class RuleBasedExtractor:
             if match:
                 matches.append(match.group(0))
         for record in records:
+            for alias in record.get("aliases", []):
+                match = re.search(rf"\b{re.escape(alias)}\b", patient_text, re.I)
+                if match:
+                    matches.append(match.group(0))
             match = re.search(rf"\b{re.escape(record['name'])}\b", patient_text, re.I)
             if match:
                 matches.append(match.group(0))

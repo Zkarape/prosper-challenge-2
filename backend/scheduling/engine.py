@@ -72,7 +72,11 @@ class SchedulingEngine:
         identity_problem = self._identity_problem(resolutions)
         if identity_problem:
             blocker = identity_problem[0]
-            action = "ASK_CLARIFICATION" if blocker["kind"] == "AMBIGUOUS" else "ASK_REQUIRED_FIELD"
+            action = (
+                "ASK_REQUIRED_FIELD"
+                if blocker["kind"] == "MISSING"
+                else "ASK_CLARIFICATION"
+            )
             return self._result(
                 patient_request,
                 resolutions,
@@ -96,8 +100,47 @@ class SchedulingEngine:
                 next_action={"type": "CANNOT_SCHEDULE"},
             )
 
+        providers_for_appointment = [
+            item
+            for item in self.catalog.providers.values()
+            if appointment_id in item["appointment_type_ids"]
+        ]
+        if not providers_for_appointment:
+            no_provider = RuleResult(
+                rule="NO_PROVIDER_OFFERS_APPOINTMENT",
+                status=RuleStatus.FAIL,
+                field="provider",
+                reason="No provider currently offers this appointment type.",
+                recoverable=False,
+            )
+            return self._result(
+                patient_request,
+                resolutions,
+                status="NO_MATCH",
+                blockers=[self._blocker(no_provider)],
+                rule_results=[no_provider],
+                next_action={"type": "CANNOT_SCHEDULE"},
+            )
+
+        required_provider_failure = self._required_provider_failure(
+            patient_request, resolutions, appointment_id
+        )
+        if required_provider_failure:
+            return self._result(
+                patient_request,
+                resolutions,
+                status="NO_MATCH",
+                blockers=[self._blocker(required_provider_failure)],
+                rule_results=[required_provider_failure],
+                next_action={"type": "CANNOT_SCHEDULE"},
+            )
+
         relevant_unknown = self._next_relevant_unknown(patient_request, appointment_id)
         if relevant_unknown:
+            current_value = getattr(patient_request, relevant_unknown).value
+            unknown_kind = (
+                "CONFLICTING" if current_value == "CONFLICTING" else "UNKNOWN"
+            )
             rule = RuleResult(
                 rule=f"{relevant_unknown.upper()}_KNOWN",
                 status=RuleStatus.UNKNOWN,
@@ -109,9 +152,26 @@ class SchedulingEngine:
                 patient_request,
                 resolutions,
                 status="NEEDS_INFORMATION",
-                blockers=[{"field": relevant_unknown, "kind": "UNKNOWN"}],
+                blockers=[
+                    {
+                        "code": self._unknown_blocker_code(
+                            relevant_unknown, unknown_kind
+                        ),
+                        "field": relevant_unknown,
+                        "kind": unknown_kind,
+                        "reason": rule.reason,
+                        "recoverable": True,
+                    }
+                ],
                 rule_results=[rule],
-                next_action={"type": "ASK_REQUIRED_FIELD", "fields": [relevant_unknown]},
+                next_action={
+                    "type": (
+                        "ASK_CLARIFICATION"
+                        if unknown_kind == "CONFLICTING"
+                        else "ASK_REQUIRED_FIELD"
+                    ),
+                    "fields": [relevant_unknown],
+                },
             )
 
         referral_failure = self._referral_failure(patient_request, appointment)
@@ -146,6 +206,58 @@ class SchedulingEngine:
         requires_permission = self._requires_permission_for_alternatives(
             patient_request, valid, resolutions, named_option_unsatisfied
         )
+
+        provider_flexibility = self._provider_flexibility_result(
+            patient_request,
+            resolutions,
+            requested_rules,
+            valid,
+        )
+        if provider_flexibility:
+            alternatives, failed_rule = provider_flexibility
+            relaxation_candidates = [
+                {
+                    **candidate.to_dict(),
+                    "requires_relaxing": self._changed_named_fields(
+                        candidate, patient_request, resolutions
+                    ),
+                    "requires_patient_permission": True,
+                }
+                for candidate in alternatives[:5]
+            ]
+            return self._result(
+                patient_request,
+                resolutions,
+                status="NEEDS_INFORMATION",
+                blockers=[self._blocker(failed_rule)],
+                rule_results=requested_rules + all_candidate_rules,
+                relaxation_candidates=relaxation_candidates,
+                next_action={
+                    "type": "ASK_CONSTRAINT_FLEXIBILITY",
+                    "fields": ["provider"],
+                    "candidate_ids": [
+                        item["candidate_id"] for item in relaxation_candidates
+                    ],
+                    "requires_patient_permission": True,
+                },
+            )
+
+        location_choices = self._missing_location_choices(
+            patient_request, resolutions, exact_valid
+        )
+        if location_choices:
+            return self._result(
+                patient_request,
+                resolutions,
+                status="NEEDS_INFORMATION",
+                blockers=[],
+                rule_results=requested_rules + all_candidate_rules,
+                next_action={
+                    "type": "ASK_CLARIFICATION",
+                    "fields": ["location"],
+                    "options": location_choices,
+                },
+            )
 
         if valid and not requires_permission:
             status = "READY_FOR_AVAILABILITY"
@@ -198,7 +310,13 @@ class SchedulingEngine:
 
         failed_requested = [rule for rule in requested_rules if rule.status == RuleStatus.FAIL]
         failed_candidates = [rule for rule in all_candidate_rules if rule.status == RuleStatus.FAIL]
-        blockers = [self._blocker(rule) for rule in failed_requested]
+        # A failed soft preference explains why the engine chose a fallback, but
+        # it does not block a decision that is ready for availability.
+        blockers = (
+            []
+            if status == "READY_FOR_AVAILABILITY"
+            else [self._blocker(rule) for rule in failed_requested]
+        )
         if not blockers and not valid:
             blockers = [self._blocker(rule) for rule in failed_candidates[:10]]
 
@@ -346,6 +464,25 @@ class SchedulingEngine:
                     recoverable=not passes,
                 )
             )
+            if request.patient_status == PatientStatus.NEW:
+                accepts = provider["accepting_new_patients"]
+                rules.append(
+                    RuleResult(
+                        rule="PROVIDER_ACCEPTS_NEW_PATIENTS",
+                        status=RuleStatus.PASS if accepts else RuleStatus.FAIL,
+                        field="provider",
+                        reason=(
+                            f"{provider['name']} accepts new patients."
+                            if accepts
+                            else f"{provider['name']} is not accepting new patients."
+                        ),
+                        recoverable=(
+                            not accepts
+                            and request.provider is not None
+                            and request.provider.requirement != Requirement.REQUIRED
+                        ),
+                    )
+                )
         if provider and location:
             passes = location["id"] in provider["location_ids"]
             rules.append(
@@ -576,9 +713,106 @@ class SchedulingEngine:
         return "Referral status changes whether this appointment can proceed."
 
     @staticmethod
+    def _unknown_blocker_code(field: str, kind: str) -> str:
+        if kind == "CONFLICTING":
+            return f"{field.upper()}_CONFLICTING"
+        return {
+            "patient_status": "PATIENT_STATUS_REQUIRED",
+            "referral_status": "REFERRAL_STATUS_REQUIRED",
+        }[field]
+
+    def _required_provider_failure(
+        self,
+        request: SchedulingRequest,
+        resolutions: dict[str, Resolution],
+        appointment_id: str,
+    ) -> RuleResult | None:
+        if (
+            request.provider is None
+            or request.provider.requirement != Requirement.REQUIRED
+            or resolutions["provider"].status != "RESOLVED"
+        ):
+            return None
+        provider = self.catalog.providers[resolutions["provider"].selected["id"]]
+        if appointment_id not in provider["appointment_type_ids"]:
+            return RuleResult(
+                rule="PROVIDER_OFFERS_APPOINTMENT",
+                status=RuleStatus.FAIL,
+                field="provider",
+                reason="The required provider does not offer this appointment type.",
+                recoverable=False,
+            )
+        if request.patient_status == PatientStatus.NEW and not provider["accepting_new_patients"]:
+            return RuleResult(
+                rule="PROVIDER_ACCEPTS_NEW_PATIENTS",
+                status=RuleStatus.FAIL,
+                field="provider",
+                reason=f"{provider['name']} is not accepting new patients.",
+                recoverable=False,
+            )
+        return None
+
+    @staticmethod
+    def _provider_flexibility_result(
+        request: SchedulingRequest,
+        resolutions: dict[str, Resolution],
+        requested_rules: list[RuleResult],
+        valid: list[Candidate],
+    ) -> tuple[list[Candidate], RuleResult] | None:
+        if (
+            request.provider is None
+            or request.provider.requirement != Requirement.UNSPECIFIED
+            or resolutions["provider"].status != "RESOLVED"
+        ):
+            return None
+        requested_provider = resolutions["provider"].selected["id"]
+        if any(candidate.provider_id == requested_provider for candidate in valid):
+            return None
+        failed = next(
+            (
+                rule
+                for rule in requested_rules
+                if rule.field == "provider" and rule.status == RuleStatus.FAIL
+            ),
+            None,
+        )
+        alternatives = [
+            candidate for candidate in valid if candidate.provider_id != requested_provider
+        ]
+        if failed is None or not alternatives:
+            return None
+        return alternatives, failed
+
+    def _missing_location_choices(
+        self,
+        request: SchedulingRequest,
+        resolutions: dict[str, Resolution],
+        exact_valid: list[Candidate],
+    ) -> list[dict[str, Any]]:
+        if (
+            request.provider is None
+            or request.location is not None
+            or resolutions["provider"].status != "RESOLVED"
+        ):
+            return []
+        location_ids = sorted({candidate.location_id for candidate in exact_valid})
+        if len(location_ids) <= 1:
+            return []
+        return [
+            {
+                "id": location_id,
+                "name": self.catalog.locations[location_id]["name"],
+            }
+            for location_id in location_ids
+        ]
+
+    @staticmethod
     def _blocker(rule: RuleResult) -> dict[str, Any]:
         blocker_codes = {
             "LOCATION_HAS_REQUIRED_CAPABILITY": "LOCATION_MISSING_CAPABILITY",
+            "PROVIDER_PRACTICES_AT_LOCATION": "PROVIDER_NOT_AT_LOCATION",
+            "PROVIDER_ACCEPTS_NEW_PATIENTS": "PROVIDER_NOT_ACCEPTING_NEW_PATIENTS",
+            "APPOINTMENT_ALLOWS_NEW_PATIENTS": "APPOINTMENT_EXISTING_PATIENT_ONLY",
         }
         return {
             "code": blocker_codes.get(rule.rule, rule.rule),

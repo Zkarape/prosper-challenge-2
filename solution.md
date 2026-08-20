@@ -1,68 +1,279 @@
-# Solution overview
+# Prosper healthcare scheduling agent
 
-## Voice agent builder
+## Overview
 
-The Phase 1 editor loads the versioned workflow in `backend/example_flow.json` through
-the scheduling API. It provides a draggable canvas, six explicit node types, four edge
-types, scoped tool assignment, a focused node inspector, validation, and atomic saving.
-The example now describes the actual safe scheduling architecture rather than a generic
-four-step appointment script. A new Pipecat call loads the saved first message and
-ElevenLabs voice, while runtime-stage metadata connects live call traces back to nodes.
+I built a voice scheduling agent and a small studio for testing, editing, and
+understanding it. A clinic operator can edit the agent as a graph, start a voice
+call from the same screen, watch each scheduling decision, inspect token use and
+logs, and run repeatable evaluations.
 
-The graph orchestrates conversation and capability scope; it cannot override the
-deterministic policy and booking boundary described below.
+The main problem was not speech. It was deciding how much authority to give the
+language model. A patient speaks in flexible language, but a clinic has exact
+appointment types, provider relationships, locations, and booking rules. Asking
+one model to understand the patient, search the catalog, apply policy, and confirm
+a booking would be simple to prototype, but difficult to trust.
 
-The scheduling agent uses an LLM for one narrow job: report what the patient said in a
-strict schema. Application code validates those observations, resolves raw phrases against
-the clinic catalog, evaluates policy, ranks candidates, checks availability, and writes a
-booking. The full catalog is never placed in the extraction prompt.
-
-## Deterministic text path
-
-Typed messages call `ConversationService`:
+My solution separates those jobs:
 
 ```text
-patient text
-  -> strict extraction (OpenAI or local test implementation)
-  -> semantic validation
-  -> patient-request update
-  -> deterministic resolution and rule results
-  -> pending offer / availability / booking action
-  -> grounded response
+microphone
+  -> Pipecat voice pipeline
+  -> final patient utterance
+  -> LLM extracts patient-stated facts
+  -> application validates those facts
+  -> deterministic code resolves the catalog and applies clinic rules
+  -> availability is searched
+  -> patient confirms an exact offer
+  -> booking system confirms the booking
+  -> spoken response
 ```
 
-## Embedded live-voice path
+The LLM understands language. It does not decide what the clinic allows. This is
+the central architectural decision in the project.
 
-Pipecat provides WebRTC audio transport, local Silero VAD, and semantic turn detection.
-ElevenLabs may commit multiple STT fragments, but the voice adapter buffers them until
-Pipecat declares the patient’s thought complete. That one authoritative turn calls the same `ConversationService`
-as typed messages: OpenAI performs observation-only extraction, deterministic code
-applies defaults and scheduling rules, and ElevenLabs speaks only the checked response.
-RTVI server messages stream the resulting state patch, rule trace, selected action,
-latency, and extraction-token usage to the main Agent Studio Workbench. The recording
-control is the primary action and does not open a modal, page, or browser window.
+## A request moving through the system
 
-## Reliability choices
+Suppose a caller says:
 
-- A named provider or location is `UNSPECIFIED` unless the patient clearly says required
-  or preferred.
-- Requested combinations are validated before valid candidates are built, so an invalid
-  request retains a precise proof and a useful alternative.
-- Every selectable alternative, slot list, and confirmation is a server-owned pending
-  offer. The model returns only accept, reject, or a one-based selection.
-- Offers carry a patient-request fingerprint and catalog content hash. A changed request,
-  catalog, eligibility result, or unavailable slot prevents booking.
-- The booking service is idempotent on `offer_id`. The agent says confirmed only after it
-  receives `status=confirmed`, a `booking_id`, and the matching `offer_id`.
-- Timezone comes from the resolved clinic location, not the extractor.
-- Traces expose operation summaries by default rather than model evidence or transcripts.
+> “I am a new patient and need the earliest knee MRI.”
 
-Structured Outputs ensure the response follows the supplied schema; semantic validation
-is still required because schema adherence does not prove that extracted facts are true.
-See the [official OpenAI Structured Outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs).
+First, Pipecat receives the browser microphone over WebRTC. ElevenLabs produces
+transcript fragments, while local voice activity detection decides when the
+patient has stopped speaking. Only the completed utterance enters the scheduling
+system. Interim words may appear while the patient speaks, but they cannot change
+the saved request.
 
-## Scope
+Next, the extractor receives only three useful pieces of context: the latest
+utterance, the current structured patient request, and the current pending offer,
+if one exists. It does not receive the full conversation, clinic catalog, or policy
+list. OpenAI Structured Outputs turns the sentence into a typed proposal such as
+`patient_status = NEW`, `appointment_type = "knee MRI"`, and
+`time = EARLIEST_AVAILABLE`. Each changed fact includes evidence from the latest
+utterance.
 
-Availability and booking are deterministic in-memory mocks because the challenge does not
-include a real scheduling system. The interfaces and validation boundaries are explicit so
-they can be replaced by production services without changing extraction authority.
+That proposal is still untrusted. Application code checks its evidence, rejects
+unsupported changes and internal IDs, and makes one bounded correction attempt
+when the structured extraction is semantically invalid. Only the validated patch
+can update the patient request.
+
+The catalog resolver then matches the patient's wording to official clinic
+records. It can return exactly one match, several possible matches, or no match.
+It never silently chooses between ambiguous records. The scheduling engine applies
+eligibility, referral, provider, location, and capability rules in a fixed order.
+It asks only for an unknown fact that can change the result. If the request is
+impossible, it keeps the exact reason and can offer the smallest safe alternative
+instead of continuing with irrelevant questions.
+
+If the request is eligible, the availability adapter returns slots and the server
+creates a pending offer. The offer contains server-owned option IDs and is tied to
+a fingerprint of the current request and a hash of the current catalog. This is
+what gives short replies such as “yes” or “the first one” a precise meaning. If the
+patient changes a material fact, the fingerprint changes and the old offer can no
+longer be confirmed.
+
+Finally, an appointment is considered booked only when the booking adapter returns
+`confirmed` with the matching offer, candidate, and slot. An assistant message is
+never treated as proof of success. The booking path is idempotent, so retrying the
+same confirmed request returns the same booking rather than creating a duplicate.
+
+## Why I did not use RAG for the clinic catalog
+
+This catalog is structured operational data, not a collection of documents. Its
+relationships and rules must be applied exactly. Semantic retrieval could be
+useful for finding a small set of likely records in a very large catalog, but it
+should not decide eligibility or silently remove alternatives.
+
+For this challenge I use deterministic normalization, exact names, aliases,
+prefixes, token matching, and relationship filtering. The model preserves raw
+patient wording; application code maps that wording to IDs. This gives three useful
+properties:
+
+- the catalog and policies are not repeated in every model prompt;
+- the same request produces the same candidates and rule results;
+- every ambiguity or rejection can be explained from clinic data.
+
+If the catalog became too large for the current in-memory indexes, I would move
+candidate retrieval to indexed PostgreSQL queries or a search service. That would
+change how candidate IDs are found, but not the trust boundary: deterministic code
+would still verify every relationship and policy before scheduling.
+
+## The patient request is the context
+
+I chose a compact, typed patient request instead of replaying the full transcript
+on every turn. It remembers the current goal, patient and referral status, raw
+appointment wording, provider and location requirements, and time preference.
+Corrections are explicit operations: set, replace, clear, or keep.
+
+This means context grows with the number of useful scheduling facts, not with the
+length of the call. The only conversational reference that normally needs to be
+carried forward is the current server-authored offer. It also makes the logic
+portable: voice calls, text API requests, and evaluation cases all call the same
+`ConversationService` instead of maintaining separate versions of the scheduling
+behavior.
+
+The trade-off is that a compact request can lose conversational nuance. I handle
+the highest-risk references directly through pending offers, preserve raw patient
+phrasing, and ask for clarification when a reference cannot be grounded. A future
+version could add a small, bounded recent-turn window for unresolved pronouns
+without restoring the full transcript on every model call.
+
+## The deterministic engine
+
+The engine follows a first-action-wins order:
+
+1. Resolve the requested appointment, provider, and location.
+2. Ask for clarification if an identity is missing or ambiguous.
+3. Check decisive patient restrictions before asking more questions.
+4. Ask for one unknown fact only when it can change eligibility.
+5. Apply referral rules.
+6. Build valid appointment, provider, and location combinations.
+7. Search availability for exact matches.
+8. Ask permission before relaxing a named preference or requirement.
+9. Block or hand off when no safe path remains.
+
+The engine returns typed decisions, candidates, rule results, blocker codes, and
+one next action. Assistant text is generated from that checked result. This keeps
+natural-language interpretation flexible while making the business outcome
+repeatable and testable.
+
+## Voice and turn handling
+
+The voice layer uses Pipecat with WebRTC, ElevenLabs speech-to-text and
+text-to-speech, and local Silero voice activity detection. ElevenLabs transcription
+is committed from the local speech-stop event so the system does not wait for a
+second provider-side end-of-turn decision. Completed turns enter a sequential
+background queue. The model and database work therefore do not block audio, VAD,
+or transcript frames, while patient turns still remain ordered.
+
+Voice is an adapter around the scheduling core. Replacing WebRTC, STT, or TTS does
+not require rewriting extraction, policy, availability, or booking logic.
+
+## Agent graph and studio
+
+The Agent graph tab edits a declarative JSON workflow. It supports conversation,
+subagent, tool, decision, handoff, and end nodes; typed edges; node positioning;
+scoped tools; and validation before saving. `AgentBuilder` can compile this format
+into Pipecat Flows nodes.
+
+For the current live scheduling demo, the saved graph supplies agent metadata such
+as the first message and visually maps real runtime stages. The scheduling loop
+itself is owned by `ConversationService` and `SchedulingEngine`, not by
+LLM-selected graph transitions. I chose this boundary because clinic eligibility
+and booking must not change when someone edits a conversational prompt. A fuller
+product would compile graph tool nodes into calls to the same deterministic
+services, while keeping policy nodes read-only or separately permissioned.
+
+The rest of the studio exists to make the system inspectable rather than merely
+flashy:
+
+- **Scheduling agent** runs the complete voice pipeline in the application and
+  shows the live conversation and per-turn context usage.
+- **Agent graph** edits the workflow and highlights stages used by the latest
+  request.
+- **Engine logic** explains each trust boundary and the exact decision order.
+- **Evaluations** runs individual cases or the complete dataset through the real
+  pipeline and shows the first failing stage.
+- **System logs** follows correlated voice, API, scheduling, and booking events
+  without logging patient wording by default.
+
+The UI also supports light, dark, and system themes so the diagnostic information
+remains readable in different environments.
+
+## Storage, concurrency, and scaling
+
+The zero-setup mode keeps state in memory. When `DATABASE_URL` is configured, the
+same storage interface uses PostgreSQL; I used Supabase as the managed deployment
+option. PostgreSQL stores conversations, the current patient request, turns,
+pending offers, catalog snapshots, agent publications, bookings, model usage, and
+evaluation runs.
+
+This makes API workers replaceable: any worker can continue a conversation, so the
+HTTP scheduling API does not require sticky sessions. A short database processing
+claim prevents two workers from processing the same conversation turn at once.
+The claim releases its connection before the LLM call, which avoids tying the
+database pool size to model concurrency. Unique constraints on message IDs, offer
+IDs, and slot IDs protect retries and duplicate bookings at the final storage
+boundary.
+
+A WebRTC call remains attached to one voice worker for the life of that connection,
+which is expected. More workers can sit behind a load balancer, while Supabase's
+transaction pooler controls database connections. The catalog remains cached in
+memory because it is small and immutable; every conversation stores its content
+hash so decisions can be reproduced after the catalog changes.
+
+I did not add Redis, Kafka, Kubernetes, or a custom cache. PostgreSQL already solves
+the immediate shared-state and concurrency problems. Those components should be
+added only after production measurements show a specific bottleneck. Similarly,
+the repository contains an application-path concurrency runner, but it is not
+presented as proof of 100 simultaneous voice calls because it does not include
+provider quotas, audio connections, or production network behavior.
+
+## Evaluation and observability
+
+I built evaluation into the product because an architecture is not useful if its
+decisions cannot be checked. Forty cases exercise extraction, semantic validation,
+state updates, and engine decisions through the same service used by real calls.
+The grader uses ordinary comparisons rather than another model, so failures are
+repeatable and show the first broken boundary.
+
+The first full run passed 4 of 40 cases. That result exposed broad candidate
+filtering, weak ambiguous-name handling, inconsistent yes/no behavior, irrelevant
+questions, and unstable blocker codes. I converted those patterns into catalog
+aliases, engine ordering rules, validation rules, pending-offer behavior, and
+meaning-based grader comparisons. The final regression run passes all 40 cases.
+The current backend suite runs 70 tests: 68 pass and 2 PostgreSQL integration
+tests are skipped unless a test database URL is supplied.
+
+This is a regression suite, not a claim of perfect real-world accuracy. Only the
+first two expected cases were manually reviewed; the other expected results began
+as drafts and were refined while debugging. Before production, clinic and safety
+reviewers should approve a larger frozen test set, including noisy speech,
+adversarial inputs, interruptions, provider failures, and real catalog changes.
+
+Every actual model call records its stage, model, provider token counts, cached
+tokens, estimated cost, and latency under one conversation ID. The final
+conversation records whether it ended in a confirmed booking, correct block,
+answered question, handoff, abandonment, or system error. This allows the product
+to measure total tokens per safely completed conversation rather than optimizing
+one cheap request while accidentally asking many extra questions.
+
+Structured logs carry request, conversation, and turn IDs across the browser,
+voice worker, API, scheduler, and booking adapter. Patient transcript text is
+excluded from operational logs by default; durable conversation data and
+operational diagnostics remain separate.
+
+## Scope and production seams
+
+Availability is deterministic mock data because the challenge provides no real
+calendar. The booking adapter has a production-shaped contract—stable slots,
+request and catalog checks, idempotency, and a confirmed response—but it does not
+connect to an EHR or practice-management system. Replacing the mock requires a new
+adapter, not a new scheduling engine.
+
+Authentication is also intentionally absent. Patient calls use opaque conversation
+IDs, and the local studio is a development tool. Before exposing agent or catalog
+editing, I would add staff authentication and authorization. Before storing real
+patient health information, I would also add the required consent, retention,
+encryption, audit, vendor agreements, and healthcare compliance controls.
+
+These omissions are deliberate. The project focuses on the hard part of the
+challenge: turning uncertain patient language into a small trusted request, then
+navigating a large, messy clinic catalog with decisions that are cheap,
+explainable, and safe to repeat.
+
+## Running the demo
+
+After configuring `OPENAI_API_KEY` and `ELEVENLABS_API_KEY`, install the
+dependencies once with `make install`. `DATABASE_URL` is optional; when it is
+set, apply the schema once with `make db-migrate`. Then run the three services in
+separate terminals:
+
+```bash
+make api
+make run
+make frontend
+```
+
+Open `http://localhost:3001`, start a call in **Scheduling agent**, and inspect the
+same request in **Agent graph**, **Engine logic**, **Evaluations**, and **System
+logs**.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ContextComparisonPanel } from "./context-comparison-panel";
 
 type EvaluationCase = {
   test_case_id: string;
@@ -264,6 +265,8 @@ export function EvaluationsPanel({ apiUrl }: { apiUrl: string }) {
       </header>
 
       {error && <div className="evaluation-notice" role="alert">{error}</div>}
+
+      <ContextComparisonPanel apiUrl={apiUrl} />
 
       <section className="evaluation-how" aria-label="How evaluation works">
         <header>

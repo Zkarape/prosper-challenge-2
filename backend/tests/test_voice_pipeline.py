@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import AsyncMock
 
@@ -8,7 +9,13 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from bot import GREETING, SchedulingTurnProcessor, build_pipeline
+from bot import (
+    GREETING,
+    TURN_END_FAILSAFE_SECS,
+    TURN_END_SILENCE_SECS,
+    SchedulingTurnProcessor,
+    build_pipeline,
+)
 from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -69,6 +76,10 @@ class VoicePipelineTests(unittest.TestCase):
             "Hi, I’m the clinic’s scheduling assistant. How can I help you today?",
         )
 
+    def test_turn_detection_does_not_leave_the_patient_waiting(self):
+        self.assertLessEqual(TURN_END_SILENCE_SECS, 0.8)
+        self.assertLessEqual(TURN_END_FAILSAFE_SECS, 2.5)
+
 
 class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
     async def test_segments_are_combined_before_publishing_one_patient_turn(self):
@@ -121,6 +132,7 @@ class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
         await processor.process_frame(
             UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
         )
+        await processor.wait_for_pending_turns()
 
         self.assertEqual(
             service.call, ("conversation_test", "I want to book a knee MRI")
@@ -138,6 +150,48 @@ class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsInstance(spoken, TTSSpeakFrame)
         self.assertEqual(spoken.text, result["assistant_message"])
+        await processor.cleanup()
+
+    async def test_slow_scheduling_does_not_block_later_audio_frames(self):
+        result = {
+            "assistant_message": "Next question",
+            "engine_result": {"next_action": {"type": "ASK_REQUIRED_FIELD"}},
+            "state_patch": {},
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }
+
+        class SlowService:
+            def __init__(self):
+                self.calls = []
+
+            def process_turn(self, conversation_id, patient_text):
+                self.calls.append(patient_text)
+                time.sleep(0.05)
+                return result
+
+        service = SlowService()
+        processor = SchedulingTurnProcessor(service, "conversation_test")
+        processor.push_frame = AsyncMock()
+
+        for text in ("first request", "second request"):
+            await processor.process_frame(
+                TranscriptionFrame(
+                    text=text,
+                    user_id="patient",
+                    timestamp="2026-08-19T00:00:00Z",
+                    finalized=True,
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+            started = time.perf_counter()
+            await processor.process_frame(
+                UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+            )
+            self.assertLess(time.perf_counter() - started, 0.02)
+
+        await processor.wait_for_pending_turns()
+        self.assertEqual(service.calls, ["first request", "second request"])
+        await processor.cleanup()
 
 
 if __name__ == "__main__":

@@ -35,12 +35,14 @@ class PatientStatusValue(str, Enum):
     NEW = "NEW"
     EXISTING = "EXISTING"
     UNKNOWN = "UNKNOWN"
+    CONFLICTING = "CONFLICTING"
 
 
 class ReferralStatusValue(str, Enum):
     ON_FILE = "ON_FILE"
     NOT_ON_FILE = "NOT_ON_FILE"
     UNKNOWN = "UNKNOWN"
+    CONFLICTING = "CONFLICTING"
 
 
 class PendingAnswer(str, Enum):

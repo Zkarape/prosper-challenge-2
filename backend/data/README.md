@@ -5,7 +5,20 @@ work: a scheduling agent has to navigate it reliably and cost-effectively. It is
 deliberately **large** (so dumping it all into the prompt is expensive/inaccurate) and
 deliberately **messy** (so naive matching fails).
 
-Counts: ~8 locations · ~50 providers · ~82 appointment types.
+Stress profile: **250 locations · 2,500 providers · 500 appointment types**.
+
+The first 8 locations, 50 providers, and 82 appointment types are the original
+evaluation catalog. Records with `stress_*` IDs expand it without changing those
+original relationships. Regenerate the same dataset with:
+
+```bash
+python backend/data/generate_large_catalog.py
+```
+
+This size tests whether extraction and deterministic catalog resolution stay
+accurate without sending the full catalog to the LLM. The generated data includes
+duplicate provider names, shared aliases, multiple time zones, multi-location
+providers, referrals, new-patient restrictions, and capability-gated services.
 
 ## Schema
 

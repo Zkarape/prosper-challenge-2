@@ -56,6 +56,24 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertEqual(evaluation["outcome"], "BOOKING_CONFIRMED")
         self.assertTrue(evaluation["safe"])
 
+    def test_exact_ordinal_and_yes_do_not_call_the_llm(self):
+        self.turn("I need a dental cleaning and I am a new patient.")
+
+        class ExtractorMustNotRun:
+            mode = "TEST_MUST_NOT_RUN"
+
+            def extract(self, **kwargs):
+                raise AssertionError("Exact pending answers should bypass extraction")
+
+        self.service.extractor = ExtractorMustNotRun()
+        selected = self.turn("The first one.")
+        self.assertEqual(selected["pending_offer"]["kind"], "CONFIRM_BOOKING")
+        self.assertEqual(selected["usage"]["model_call_count"], 0)
+
+        confirmed = self.turn("Yes.")
+        self.assertEqual(confirmed["booking"]["status"], "confirmed")
+        self.assertEqual(confirmed["usage"]["model_call_count"], 0)
+
     def test_unclear_slot_selection_does_not_guess(self):
         self.turn(
             "I'm a new patient. Book a dental cleaning with Dr. Wei Lee at "
@@ -164,6 +182,54 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertIn("practices at", response["assistant_message"])
         self.assertIsNone(response["patient_request"]["current_goal"])
         self.assertIsNone(response["patient_request"]["provider"])
+
+    def test_duplicate_provider_information_is_clarified_without_booking_state(self):
+        first = self.turn("Where does Dr. Linda Ramirez work?")
+
+        self.assertEqual(
+            first["engine_result"]["next_action"]["type"], "ASK_CLARIFICATION"
+        )
+        self.assertEqual(
+            first["engine_result"]["next_action"]["fields"], ["provider"]
+        )
+        self.assertEqual(first["pending_offer"]["kind"], "FIELD_OPTIONS")
+        self.assertIn("Cardiology", first["assistant_message"])
+        self.assertIn("Radiology", first["assistant_message"])
+        self.assertIsNone(first["patient_request"]["provider"])
+
+        second = self.turn("The cardiology one.")
+
+        self.assertEqual(
+            second["engine_result"]["next_action"]["type"], "ANSWER_INFORMATION"
+        )
+        self.assertIn("Cardiology", second["assistant_message"])
+        self.assertIn("practices at", second["assistant_message"])
+        self.assertIsNone(second["patient_request"]["provider"])
+        self.assertIsNone(second["pending_offer"])
+
+    def test_informal_skin_check_offers_catalog_choices(self):
+        response = self.turn("I'm new and want a skin check.")
+
+        self.assertEqual(
+            response["engine_result"]["next_action"]["type"], "ASK_CLARIFICATION"
+        )
+        self.assertEqual(
+            response["engine_result"]["next_action"]["fields"],
+            ["appointment_type"],
+        )
+        self.assertIn("Skin Cancer Screening", response["assistant_message"])
+        self.assertIn("Full Body Skin Exam", response["assistant_message"])
+        self.assertEqual(response["pending_offer"]["kind"], "FIELD_OPTIONS")
+
+    def test_annual_checkup_offers_catalog_choices(self):
+        response = self.turn("I'm new and need my annual checkup.")
+
+        self.assertEqual(
+            response["engine_result"]["next_action"]["type"], "ASK_CLARIFICATION"
+        )
+        self.assertIn("Annual Physical", response["assistant_message"])
+        self.assertIn("Annual Wellness Visit", response["assistant_message"])
+        self.assertEqual(response["pending_offer"]["kind"], "FIELD_OPTIONS")
 
     def test_yes_answers_a_referral_question_without_llm_policy_authority(self):
         first = self.turn("I'm a new patient. Book a Cardiology Consultation.")

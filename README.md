@@ -44,6 +44,11 @@ Open `http://localhost:3001`, press the recording button under **Scheduling agen
 
 After a processed turn, open **Agent graph** to see which stages ran and inspect their validated inputs, decisions, token usage, and booking result.
 
+Open **System logs** to follow correlated API, scheduling, booking, voice, and
+browser-error events. Local JSONL files live in `backend/.logs`; `make logs`
+follows them in a terminal. See [LOGGING.md](LOGGING.md) for filters, privacy
+defaults, and production stdout settings.
+
 By default the demo uses process-local memory. For durable conversations and safe
 multi-worker booking, follow [SCALING.md](SCALING.md) to start PostgreSQL and set
 `DATABASE_URL`.
@@ -70,6 +75,7 @@ The text API remains available at `http://127.0.0.1:8000` for automated tests an
 | Path | Responsibility |
 | --- | --- |
 | `backend/bot.py` | Pipecat WebRTC, local VAD and semantic turn detection, STT-fragment aggregation, the shared scheduling turn service, live diagnostics, and ElevenLabs STT/TTS. |
+| `backend/observability.py` | Structured logging, correlation fields, secret redaction, rotated JSONL sinks, and local log inspection. |
 | `frontend/app/voice-call-panel.tsx` | Embedded call controls, microphone connection, browser audio, and live patient/assistant transcript. |
 | `backend/extraction/` | Strict Pydantic extraction schema, prompt, OpenAI Responses adapter, telemetry, and semantic validator. |
 | `backend/scheduling/` | Patient request reducer, content-hashed catalog resolution, deterministic rules, availability, booking, and shared turn service. |

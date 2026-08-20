@@ -62,6 +62,7 @@ class SchedulingEngineTests(unittest.TestCase):
     def test_preferred_invalid_location_allows_ranked_alternative(self):
         result = self.engine.evaluate(self.dental_request("PREFERRED"))
         self.assertEqual(result["decision"]["status"], "READY_FOR_AVAILABILITY")
+        self.assertEqual(result["blockers"], [])
         self.assertEqual(result["valid_candidates"][0]["location_id"], "loc_001")
 
     def test_requested_provider_mismatch_has_a_specific_failure(self):
@@ -99,7 +100,10 @@ class SchedulingEngineTests(unittest.TestCase):
         result = self.engine.evaluate(request)
         self.assertEqual(result["decision"]["status"], "BLOCKED")
         self.assertEqual(result["next_action"]["type"], "CANNOT_SCHEDULE")
-        self.assertEqual(result["blockers"][0]["code"], "APPOINTMENT_ALLOWS_NEW_PATIENTS")
+        self.assertEqual(
+            result["blockers"][0]["code"],
+            "APPOINTMENT_EXISTING_PATIENT_ONLY",
+        )
 
     def test_referral_is_asked_when_it_changes_the_outcome(self):
         request = SchedulingRequest().apply_patch(
@@ -122,6 +126,28 @@ class SchedulingEngineTests(unittest.TestCase):
         self.assertEqual(resolution.status, "RESOLVED")
         self.assertEqual(resolution.selected["id"], "appt_065")
         self.assertEqual(resolution.match_method, "NAME_TOKENS_IN_QUERY")
+
+    def test_shared_skin_check_alias_stays_ambiguous(self):
+        for phrase in ("skin check", "a skin check"):
+            with self.subTest(phrase=phrase):
+                resolution = self.catalog.resolve_appointment_type(phrase)
+
+                self.assertEqual(resolution.status, "AMBIGUOUS")
+                self.assertEqual(
+                    [item["id"] for item in resolution.candidates],
+                    ["appt_027", "appt_028"],
+                )
+                self.assertEqual(resolution.match_method, "EXACT_ALIAS")
+
+    def test_shared_annual_checkup_alias_stays_ambiguous(self):
+        resolution = self.catalog.resolve_appointment_type("annual checkup")
+
+        self.assertEqual(resolution.status, "AMBIGUOUS")
+        self.assertEqual(
+            [item["id"] for item in resolution.candidates],
+            ["appt_002", "appt_003"],
+        )
+        self.assertEqual(resolution.match_method, "EXACT_ALIAS")
 
     def test_catalog_version_is_a_content_hash(self):
         self.assertTrue(self.catalog.version.startswith("sha256:"))

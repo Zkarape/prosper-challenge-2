@@ -27,6 +27,7 @@ test("server-renders the Prosper Agent Studio shell", async () => {
   assert.match(html, /Agent graph/);
   assert.match(html, /Engine logic/);
   assert.match(html, /Evaluations/);
+  assert.match(html, /System logs/);
   assert.doesNotMatch(html, /Scale test/);
   assert.match(html, /Loading voice test/);
   assert.match(html, /Context usage/);
@@ -36,13 +37,14 @@ test("server-renders the Prosper Agent Studio shell", async () => {
 });
 
 test("ships product metadata and removes the disposable starter", async () => {
-  const [layout, page, graphEditor, voicePanel, evaluationsPanel, enginePanel, styles, packageJson] = await Promise.all([
+  const [layout, page, graphEditor, voicePanel, evaluationsPanel, enginePanel, themeControl, styles, packageJson] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/agent-graph-editor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/voice-call-panel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/evaluations-panel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/engine-logic-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/theme-control.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
@@ -57,6 +59,8 @@ test("ships product metadata and removes the disposable starter", async () => {
   assert.match(page, /NEXT_PUBLIC_SCHEDULING_API_URL/);
   assert.doesNotMatch(page, /window\.open/);
   assert.match(voicePanel, /aria-label="Start voice call"/);
+  assert.match(voicePanel, /RTVIEvent\.UserTranscript/);
+  assert.match(voicePanel, /patient-live/);
   assert.doesNotMatch(voicePanel, /role="dialog"|voice-call-backdrop/);
   assert.match(evaluationsPanel, /Prove the scheduling pipeline/);
   assert.match(evaluationsPanel, /Run selected case/);
@@ -64,8 +68,13 @@ test("ships product metadata and removes the disposable starter", async () => {
   assert.match(evaluationsPanel, /\/api\/evaluations\/dataset/);
   assert.match(evaluationsPanel, /\/api\/evaluations\/runs/);
   assert.doesNotMatch(evaluationsPanel, /response_requirements|Safety assertions/);
-  assert.match(enginePanel, /The deterministic scheduling engine/);
-  assert.match(enginePanel, /Small context, durable memory/);
+  assert.match(enginePanel, /One request through the real system/);
+  assert.match(enginePanel, /SchedulingEngine\.evaluate/);
+  assert.match(enginePanel, /The LLM has no booking authority/);
+  assert.match(enginePanel, /graph does not yet compile into those rules/i);
+  assert.match(themeControl, /light.*dark.*system/is);
+  assert.match(layout, /prosper-theme/);
+  assert.match(page, /ThemeControl/);
   assert.doesNotMatch(page, /ScalabilityPanel|Scale test/);
   assert.match(styles, /--purple:\s*#6348ff/i);
   assert.match(styles, /--pink:\s*#e25dcc/i);

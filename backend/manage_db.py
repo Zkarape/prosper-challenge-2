@@ -87,7 +87,8 @@ def status() -> None:
         tables = connection.execute(
             """
             SELECT to_regclass('public.conversations'),
-                   to_regclass('public.bookings')
+                   to_regclass('public.bookings'),
+                   to_regclass('public.evaluation_runs')
             """
         ).fetchone()
         if all(tables):

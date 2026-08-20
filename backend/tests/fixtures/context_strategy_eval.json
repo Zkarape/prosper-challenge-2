@@ -1,0 +1,126 @@
+{
+  "dataset_version": "1.0",
+  "description": "Paired multi-turn conversations for comparing compact state, one bounded recent exchange, and full transcript history.",
+  "methodology": "All strategies use the same model, schema, patient messages, deterministic engine, and expected final contract. The only changed input is how much prior dialogue is included in each extraction call.",
+  "review_status": "DRAFT_EXPECTATIONS",
+  "scenarios": [
+    {
+      "scenario_id": "context_001",
+      "title": "Required location is later removed",
+      "patient_turns": [
+        "I want to book a dental cleaning.",
+        "I am a new patient.",
+        "I would prefer the Richmond location.",
+        "Actually, Richmond has to be the location.",
+        "Actually, any location is fine.",
+        "Please find the earliest available appointment."
+      ],
+      "expected_final": {
+        "patient_request": {
+          "current_goal": "BOOK_APPOINTMENT",
+          "patient_status": "NEW",
+          "appointment_type": {"raw_text_resolves_to": "appt_074"},
+          "location": null,
+          "time": {"objective": "EARLIEST_AVAILABLE"}
+        },
+        "decision_status": "READY_FOR_AVAILABILITY",
+        "action_type": "QUERY_AVAILABILITY",
+        "booking_status": null
+      }
+    },
+    {
+      "scenario_id": "context_002",
+      "title": "MRI facts, provider correction, and time correction",
+      "patient_turns": [
+        "I need to book a knee MRI.",
+        "I am an existing patient.",
+        "My referral is on file.",
+        "I would prefer Dr. Hannah Nguyen.",
+        "Actually, any doctor is fine.",
+        "Friday mornings are best.",
+        "Actually, find the earliest available time instead."
+      ],
+      "expected_final": {
+        "patient_request": {
+          "current_goal": "BOOK_APPOINTMENT",
+          "patient_status": "EXISTING",
+          "referral_status": "ON_FILE",
+          "appointment_type": {"raw_text_resolves_to": "appt_065"},
+          "provider": null,
+          "time": {"objective": "EARLIEST_AVAILABLE"}
+        },
+        "decision_status": "READY_FOR_AVAILABILITY",
+        "action_type": "QUERY_AVAILABILITY",
+        "booking_status": null
+      }
+    },
+    {
+      "scenario_id": "context_003",
+      "title": "Ambiguous appointment is clarified, then provider is removed",
+      "patient_turns": [
+        "I want to schedule a skin check.",
+        "I mean a skin cancer screening.",
+        "I am a new patient.",
+        "I would prefer Dr. Sarah Kim.",
+        "Actually, any provider is fine.",
+        "Please find the earliest available time."
+      ],
+      "expected_final": {
+        "patient_request": {
+          "current_goal": "BOOK_APPOINTMENT",
+          "patient_status": "NEW",
+          "appointment_type": {"raw_text_resolves_to": "appt_027"},
+          "provider": null,
+          "time": {"objective": "EARLIEST_AVAILABLE"}
+        },
+        "decision_status": "READY_FOR_AVAILABILITY",
+        "action_type": "QUERY_AVAILABILITY",
+        "booking_status": null
+      }
+    },
+    {
+      "scenario_id": "context_004",
+      "title": "Short replies select and confirm a server-owned offer",
+      "patient_turns": [
+        "I need a dental cleaning and I am a new patient.",
+        "The first one.",
+        "Yes."
+      ],
+      "expected_final": {
+        "patient_request": {
+          "current_goal": "BOOK_APPOINTMENT",
+          "patient_status": "NEW",
+          "appointment_type": {"raw_text_resolves_to": "appt_074"}
+        },
+        "decision_status": "READY_FOR_AVAILABILITY",
+        "action_type": "QUERY_AVAILABILITY",
+        "booking_status": "confirmed"
+      }
+    },
+    {
+      "scenario_id": "context_005",
+      "title": "Information question does not erase an active booking request",
+      "patient_turns": [
+        "I want to book a knee MRI.",
+        "I am an existing patient.",
+        "My referral is on file.",
+        "Where is Dr. Hannah Nguyen located?",
+        "Any doctor is fine.",
+        "Please find the earliest available appointment."
+      ],
+      "expected_final": {
+        "patient_request": {
+          "current_goal": "BOOK_APPOINTMENT",
+          "patient_status": "EXISTING",
+          "referral_status": "ON_FILE",
+          "appointment_type": {"raw_text_resolves_to": "appt_065"},
+          "provider": null,
+          "time": {"objective": "EARLIEST_AVAILABLE"}
+        },
+        "decision_status": "READY_FOR_AVAILABILITY",
+        "action_type": "QUERY_AVAILABILITY",
+        "booking_status": null
+      }
+    }
+  ]
+}

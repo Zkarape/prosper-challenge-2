@@ -535,11 +535,7 @@
                 "state_after_changes": {
                     "active_intents": [
                         "ASK_INFORMATION"
-                    ],
-                    "provider": {
-                        "raw_text": "Dr. Linda Ramirez",
-                        "requirement": "UNSPECIFIED"
-                    }
+                    ]
                 },
                 "resolution": {
                     "provider": {
@@ -2069,10 +2065,6 @@
                         "objective": "SPECIFIC_TIME",
                         "timezone": "America/Los_Angeles",
                         "evidence": "Not Friday. Monday morning instead"
-                    },
-                    "pending_answer": {
-                        "value": "REJECT",
-                        "evidence": "Not Friday"
                     }
                 },
                 "state_after_changes": {
@@ -2319,22 +2311,13 @@
                     "pending_answer": {
                         "value": "REJECT",
                         "evidence": "No"
-                    },
-                    "location": {
-                        "operation": "KEEP",
-                        "raw_text": null,
-                        "requirement": null,
-                        "evidence": "I can only go to Richmond"
                     }
                 },
                 "state_after_changes": {
-                    "location": {
-                        "raw_text": "Richmond",
-                        "requirement": "REQUIRED"
-                    },
-                    "rejected_pending_action_ids": [
-                        "pending_mission"
-                    ]
+                "location": {
+                    "raw_text": "Richmond",
+                    "requirement": "REQUIRED"
+                }
                 },
                 "resolution": {
                     "appointment_type": {
@@ -2598,7 +2581,7 @@
                     },
                     "time": {
                         "operation": "SET",
-                        "raw_text": "Fridays before noon, otherwise earliest morning",
+                        "raw_text": "Fridays before noon, but the earliest morning appointment would also work",
                         "objective": "SPECIFIC_TIME",
                         "timezone": "America/Los_Angeles",
                         "evidence": "Fridays before noon are easiest, but the earliest morning appointment would also work"
@@ -2620,7 +2603,7 @@
                         "requirement": "REQUIRED"
                     },
                     "time": {
-                        "raw_text": "Fridays before noon, otherwise earliest morning",
+                    "raw_text": "Fridays before noon, but the earliest morning appointment would also work",
                         "objective": "SPECIFIC_TIME",
                         "timezone": "America/Los_Angeles"
                     }
@@ -2859,11 +2842,11 @@
                     "intents": [
                         "BOOK_APPOINTMENT"
                     ],
-                    "referral_status": {
-                        "operation": "KEEP",
-                        "value": null,
-                        "evidence": "I actually don't know whether it was received"
-                    }
+                "referral_status": {
+                    "operation": "KEEP",
+                    "value": null,
+                    "evidence": "I actually don't know whether it was received"
+                }
                 },
                 "state_after_changes": {
                     "referral_status": "UNKNOWN"
@@ -2934,14 +2917,14 @@
                     ],
                     "appointment_type": {
                         "operation": "SET",
-                        "raw_text": "someone for headaches and dizziness",
+                        "raw_text": "headaches and dizziness",
                         "requirement": "UNSPECIFIED",
                         "evidence": "headaches and dizziness"
                     }
                 },
                 "state_after_changes": {
                     "appointment_type": {
-                        "raw_text": "someone for headaches and dizziness",
+                    "raw_text": "headaches and dizziness",
                         "requirement": "UNSPECIFIED"
                     }
                 },
@@ -3149,36 +3132,23 @@
                     }
                 },
                 "resolution": {
-                    "appointment_type": {
-                        "status": "RESOLVED",
-                        "selected_id": "appt_004",
-                        "candidate_ids": [
-                            "appt_004"
-                        ]
-                    },
-                    "provider": {
-                        "status": "RESOLVED",
-                        "selected_id": "prov_041",
-                        "candidate_ids": [
-                            "prov_041"
-                        ]
-                    },
-                    "location": {
-                        "status": "RESOLVED",
-                        "selected_id": "loc_003",
-                        "candidate_ids": [
-                            "loc_003"
-                        ]
-                    }
-                },
-                "engine": {
-                    "decision_status": "READY_FOR_AVAILABILITY",
-                    "action_type": "QUERY_AVAILABILITY",
-                    "question_fields": [],
-                    "blocker_codes": [],
-                    "valid_candidate_ids": [
-                        "appt_004:prov_041:loc_003"
-                    ],
+                "appointment_type": {
+                    "status": "AMBIGUOUS",
+                    "selected_id": null,
+                    "candidate_ids": [
+                        "appt_004",
+                        "appt_005"
+                    ]
+                }
+            },
+            "engine": {
+                "decision_status": "NEEDS_INFORMATION",
+                "action_type": "ASK_CLARIFICATION",
+                "question_fields": [
+                    "appointment_type"
+                ],
+                "blocker_codes": [],
+                "valid_candidate_ids": [],
                     "relaxation_candidate_ids": [],
                     "requires_patient_permission": false
                 },
@@ -4130,28 +4100,10 @@
                         "raw_text": "M R I spy",
                         "requirement": "UNSPECIFIED",
                         "evidence": "M R I spy"
-                    },
-                    "unclear_references": [
-                        {
-                            "raw_text": "M R I spy",
-                            "possible_field": "appointment_type",
-                            "evidence": "M R I spy"
-                        }
-                    ]
-                },
-                "state_after_changes": {
-                    "appointment_type": {
-                        "raw_text": "M R I spy",
-                        "requirement": "UNSPECIFIED"
                     }
                 },
-                "resolution": {
-                    "appointment_type": {
-                        "status": "UNRESOLVED",
-                        "selected_id": null,
-                        "candidate_ids": []
-                    }
-                },
+            "state_after_changes": {
+            },
                 "engine": {
                     "decision_status": "NEEDS_INFORMATION",
                     "action_type": "ASK_CLARIFICATION",

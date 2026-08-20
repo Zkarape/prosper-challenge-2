@@ -3,7 +3,7 @@
 VENV := backend/.venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: help install run api frontend db-up db-migrate db-status test-backend clean
+.PHONY: help install run api frontend logs logs-once logs-errors db-up db-migrate db-status test-backend clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -22,6 +22,15 @@ api: ## Run the local text scheduling API on http://localhost:8000
 
 frontend: ## Run the Agent Studio frontend
 	cd frontend && npm run dev
+
+logs: ## Follow structured API and voice logs
+	$(PYTHON) backend/show_logs.py --follow --limit 100
+
+logs-once: ## Print the latest 200 structured events
+	$(PYTHON) backend/show_logs.py --limit 200
+
+logs-errors: ## Follow errors from every backend process
+	$(PYTHON) backend/show_logs.py --follow --limit 100 --level ERROR
 
 db-up: ## Start local PostgreSQL in Docker
 	docker compose up -d postgres

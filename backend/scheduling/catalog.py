@@ -82,6 +82,16 @@ class Catalog:
                     f"locations={sorted(missing_locations)}, "
                     f"appointment_types={sorted(missing_types)}"
                 )
+        for item in (
+            list(self.locations.values())
+            + list(self.providers.values())
+            + list(self.appointment_types.values())
+        ):
+            aliases = item.get("aliases", [])
+            if not isinstance(aliases, list) or not all(
+                isinstance(alias, str) and normalize(alias) for alias in aliases
+            ):
+                raise ValueError(f"Catalog aliases are invalid for {item['id']}")
 
     def resolve_appointment_type(self, query: str) -> Resolution:
         return self._resolve(query, self.appointment_types.values(), "appointment_type")
@@ -112,20 +122,54 @@ class Catalog:
     def resolve_location(self, query: str) -> Resolution:
         return self._resolve(query, self.locations.values(), "location")
 
+    def find_entity_mention(self, text: str, entity_type: str) -> str | None:
+        """Find an exact catalog name or alias inside a longer utterance.
+
+        This does not resolve or choose an ID. It only returns patient wording
+        that literally matches a catalog-owned phrase, so ambiguous aliases
+        remain ambiguous for the scheduling engine.
+        """
+
+        groups = {
+            "appointment_type": self.appointment_types,
+            "provider": self.providers,
+            "location": self.locations,
+        }
+        records = groups[entity_type].values()
+        normalized_text = normalize(text)
+        mentions: set[str] = set()
+        for record in records:
+            for phrase in [record["name"], *record.get("aliases", [])]:
+                normalized_phrase = normalize(phrase)
+                if re.search(
+                    rf"(?<![a-z0-9]){re.escape(normalized_phrase)}(?![a-z0-9])",
+                    normalized_text,
+                ):
+                    mentions.add(normalized_phrase)
+        return max(mentions, key=lambda item: (len(item.split()), len(item))) if mentions else None
+
     def _resolve(
         self, query: str, records: Iterable[dict[str, Any]], entity_type: str
     ) -> Resolution:
         normalized_query = normalize(query)
         if not normalized_query:
             return Resolution("UNRESOLVED", query, None, [], None)
+        alias_query = re.sub(
+            r"^(?:a|an|the|my|our)\s+", "", normalized_query
+        )
 
         scored: list[tuple[int, dict[str, Any], str]] = []
         query_tokens = set(normalized_query.split())
         for record in records:
             normalized_name = normalize(record["name"])
+            normalized_aliases = {
+                normalize(alias) for alias in record.get("aliases", [])
+            }
             name_tokens = set(normalized_name.split())
             if normalized_name == normalized_query:
                 score, method = 100, "EXACT_NAME"
+            elif alias_query in normalized_aliases:
+                score, method = 95, "EXACT_ALIAS"
             elif normalized_name.startswith(normalized_query) or normalized_query.startswith(
                 normalized_name
             ):

@@ -2,10 +2,13 @@
 
 import { type ComponentType, useEffect, useState } from "react";
 import { AgentGraphEditor } from "./agent-graph-editor";
+import { ClientObservability } from "./client-observability";
 import { EngineLogicPanel } from "./engine-logic-panel";
 import { EvaluationsPanel } from "./evaluations-panel";
+import { SystemLogsPanel } from "./system-logs-panel";
+import { ThemeControl } from "./theme-control";
 
-type Tab = "test" | "graph" | "engine" | "evaluations";
+type Tab = "test" | "graph" | "engine" | "evaluations" | "logs";
 type VoiceCallPanelComponent = ComponentType<{
   endpoint: string;
   onSchedulingTurn: (turn: unknown) => void;
@@ -16,6 +19,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "graph", label: "Agent graph" },
   { id: "engine", label: "Engine logic" },
   { id: "evaluations", label: "Evaluations" },
+  { id: "logs", label: "System logs" },
 ];
 
 const VOICE_AGENT_URL = process.env.NEXT_PUBLIC_VOICE_AGENT_URL ?? "http://127.0.0.1:7860";
@@ -88,6 +92,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      <ClientObservability apiUrl={SCHEDULING_API_URL} />
       <aside className="sidebar">
         <div className="brand">
           <Mark />
@@ -111,11 +116,14 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <h1>{tabs.find((tab) => tab.id === activeTab)?.label}</h1>
-          {activeTab === "test" && currentTurn && (
-            <button className="inspect-turn-button" type="button" onClick={() => setActiveTab("graph")}>
-              Inspect last turn →
-            </button>
-          )}
+          <div className="topbar-actions">
+            {activeTab === "test" && currentTurn && (
+              <button className="inspect-turn-button" type="button" onClick={() => setActiveTab("graph")}>
+                Inspect last turn →
+              </button>
+            )}
+            <ThemeControl />
+          </div>
         </header>
 
         {activeTab === "test" && (
@@ -150,6 +158,8 @@ export default function Home() {
         )}
 
         {activeTab === "engine" && <EngineLogicPanel />}
+
+        {activeTab === "logs" && <SystemLogsPanel apiUrl={SCHEDULING_API_URL} />}
 
       </section>
     </main>

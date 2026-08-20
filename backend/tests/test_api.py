@@ -13,6 +13,8 @@ if str(BACKEND) not in sys.path:
 os.environ["EXTRACTOR_MODE"] = "local"
 os.environ["DATABASE_URL"] = ""
 os.environ["MIGRATION_DATABASE_URL"] = ""
+os.environ["APP_ENV"] = "testing"
+os.environ["ENABLE_DEBUG_LOG_API"] = "true"
 
 from fastapi.testclient import TestClient
 
@@ -43,6 +45,7 @@ class SchedulingApiTests(unittest.TestCase):
     def test_health_and_text_turn_contract(self):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
+        self.assertTrue(health.headers["x-request-id"].startswith("req_"))
         self.assertIn(health.json()["extractor_mode"], {"LOCAL_STRUCTURED", "OPENAI_STRUCTURED"})
 
         created = self.client.post("/api/conversations")
@@ -68,6 +71,27 @@ class SchedulingApiTests(unittest.TestCase):
             [item["stage"] for item in payload["trace"]],
             ["Extract", "Resolve", "Rules", "Decision"],
         )
+
+    def test_local_structured_log_interface_and_browser_events(self):
+        status = self.client.get("/api/system/logging")
+        self.assertEqual(status.status_code, 200)
+        self.assertFalse(status.json()["transcripts_in_logs"])
+
+        accepted = self.client.post(
+            "/api/system/client-events",
+            json={
+                "level": "ERROR",
+                "event": "browser_error",
+                "message": "Test browser failure",
+                "path": "/",
+            },
+        )
+        self.assertEqual(accepted.status_code, 202)
+        self.assertTrue(accepted.json()["accepted"])
+
+        logs = self.client.get("/api/system/logs?limit=10&search=browser_error")
+        self.assertEqual(logs.status_code, 200)
+        self.assertIsInstance(logs.json()["events"], list)
 
     def test_unknown_conversation_returns_404(self):
         response = self.client.post(
@@ -110,6 +134,23 @@ class SchedulingApiTests(unittest.TestCase):
         self.assertEqual(payload["manual_authored_case_count"], 2)
         self.assertEqual(payload["cases"][0]["test_case_id"], "case_001")
 
+    def test_context_strategy_comparison_requires_real_model_usage(self):
+        dataset = self.client.get("/api/evaluations/context-comparison/dataset")
+        self.assertEqual(dataset.status_code, 200)
+        self.assertEqual(dataset.json()["scenario_count"], 5)
+        self.assertEqual(dataset.json()["turn_count"], 28)
+        self.assertEqual(dataset.json()["repetitions"], 3)
+        self.assertEqual(dataset.json()["turn_count_per_strategy"], 84)
+        self.assertEqual(dataset.json()["total_patient_turns"], 252)
+        self.assertFalse(dataset.json()["available"])
+
+        rejected = self.client.post("/api/evaluations/context-comparison/runs")
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(
+            rejected.json()["detail"],
+            "CONTEXT_COMPARISON_REQUIRES_STRUCTURED_LLM",
+        )
+
     def test_agent_workflow_is_available_and_invalid_edits_are_rejected(self):
         response = self.client.get("/api/agent")
         self.assertEqual(response.status_code, 200)
@@ -139,6 +180,25 @@ class SchedulingApiTests(unittest.TestCase):
         )
         self.assertTrue(
             all(stage["status"] == "PASS" for stage in payload["cases"][0]["stages"])
+        )
+
+    def test_soft_preference_grades_the_best_candidate_tier(self):
+        response = self.client.post(
+            "/api/evaluations/runs",
+            json={"case_ids": ["case_004"], "extractor": "local"},
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = self.wait_for_evaluation(response.json()["run_id"])
+        engine_stage = next(
+            stage
+            for stage in payload["cases"][0]["stages"]
+            if stage["id"] == "engine"
+        )
+        self.assertEqual(engine_stage["status"], "PASS")
+        self.assertEqual(engine_stage["actual"]["blocker_codes"], [])
+        self.assertEqual(
+            engine_stage["actual"]["valid_candidate_ids"],
+            ["appt_074:prov_018:loc_001"],
         )
 
     def test_all_40_cases_execute_and_latest_run_is_available(self):

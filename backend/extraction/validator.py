@@ -28,6 +28,9 @@ class ValidatedExtraction:
 
 
 class ExtractionValidator:
+    def __init__(self, catalog: Any | None = None):
+        self.catalog = catalog
+
     def validate_and_convert(
         self,
         *,
@@ -39,7 +42,12 @@ class ExtractionValidator:
         transcript_normalized = _normalize(transcript)
         patch: dict[str, Any] = {}
 
-        observed = [item.value for item in extraction.observed_intents]
+        observed = self._validated_intents(
+            [item.value for item in extraction.observed_intents],
+            transcript,
+            patient_request,
+            pending_offer,
+        )
         if observed:
             patch["observed_intents"] = observed
 
@@ -57,6 +65,8 @@ class ExtractionValidator:
                         and current not in {"UNKNOWN", value}
                     ):
                         value = "CONFLICTING"
+                if value == getattr(patient_request, field_name).value:
+                    continue
                 patch[field_name] = {"operation": change.operation.value, "value": value}
 
         for field_name in ("appointment_type", "provider", "location"):
@@ -71,13 +81,42 @@ class ExtractionValidator:
                 raise SemanticValidationError(
                     f"{field_name}: use REPLACE to change an existing value"
                 )
+            if change.operation == PatchOperation.CLEAR and current_entity is None:
+                # Clearing an already-empty preference changes nothing. Keeping
+                # it out of the trusted patch makes the downstream state change
+                # describe only meaningful patient updates.
+                continue
             if change.operation != PatchOperation.KEEP:
                 payload: dict[str, Any] = {"operation": change.operation.value}
                 if change.raw_text is not None:
                     payload["raw_text"] = change.raw_text.strip()
                 if change.requirement is not None:
-                    payload["requirement"] = change.requirement.value
+                    payload["requirement"] = self._grounded_requirement(
+                        field_name,
+                        change.raw_text or "",
+                        transcript,
+                    )
                 patch[field_name] = payload
+
+        if (
+            self.catalog is not None
+            and "appointment_type" not in patch
+            and getattr(patient_request, "appointment_type", None) is None
+            and (
+                "BOOK_APPOINTMENT" in observed
+                or getattr(patient_request, "current_goal", None)
+                == "BOOK_APPOINTMENT"
+            )
+        ):
+            mention = self.catalog.find_entity_mention(
+                transcript, "appointment_type"
+            )
+            if mention:
+                patch["appointment_type"] = {
+                    "operation": "SET",
+                    "raw_text": mention,
+                    "requirement": "UNSPECIFIED",
+                }
 
         change = extraction.time
         self._validate_change(change, "time", transcript_normalized, "raw_text")
@@ -86,7 +125,14 @@ class ExtractionValidator:
             if change.raw_text is not None:
                 payload["raw_text"] = change.raw_text.strip()
             if change.objective is not None:
-                payload["objective"] = change.objective.value
+                objective = change.objective.value
+                if objective == "EARLIEST_AVAILABLE" and re.search(
+                    r"\b(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|before|after|at\s+\d|noon)\b",
+                    change.raw_text or "",
+                    re.I,
+                ):
+                    objective = "SPECIFIC_TIME"
+                payload["objective"] = objective
             patch["time"] = payload
 
         priority = extraction.primary_priority
@@ -115,23 +161,136 @@ class ExtractionValidator:
                 raise SemanticValidationError("SELECT requires an ordinal or selection text")
             if answer.ordinal is not None and answer.ordinal < 1:
                 raise SemanticValidationError("Selection ordinal must be one-based")
-        elif answer.ordinal is not None or answer.raw_selection_text is not None:
-            raise SemanticValidationError(
-                "Selection details are allowed only when pending_answer is SELECT"
-            )
+        # Extra copied wording has no authority for ACCEPT/REJECT. It is safely
+        # ignored; only SELECT may use an ordinal or selection text to choose an
+        # option.
 
         unclear = [item.model_dump(mode="json") for item in extraction.unclear_references]
         for item in extraction.unclear_references:
             self._validate_text(item.evidence, "unclear_reference.evidence", transcript_normalized)
             self._validate_text(item.raw_text, "unclear_reference.raw_text", transcript_normalized)
 
+        pending_answer = answer.value.value
+        pending_kind = getattr(getattr(pending_offer, "kind", None), "value", None)
+        scheduling_changes = set(patch) - {"observed_intents"}
+        if (
+            pending_kind == "CONFIRM_BOOKING"
+            and pending_answer == "REJECT"
+            and scheduling_changes
+        ):
+            # A replacement fact is the actionable meaning. Applying it safely
+            # invalidates the stale confirmation, so it must not enter the
+            # ambiguous "answer plus change" branch.
+            pending_answer = "NONE"
+
         return ValidatedExtraction(
             patch=patch,
-            pending_answer=answer.value.value,
-            selection_ordinal=answer.ordinal,
-            raw_selection_text=answer.raw_selection_text,
+            pending_answer=pending_answer,
+            selection_ordinal=(
+                answer.ordinal if answer.value == PendingAnswer.SELECT else None
+            ),
+            raw_selection_text=(
+                answer.raw_selection_text
+                if answer.value == PendingAnswer.SELECT
+                else None
+            ),
             unclear_references=unclear,
         )
+
+    @staticmethod
+    def _validated_intents(
+        observed: list[str],
+        transcript: str,
+        patient_request: Any,
+        pending_offer: Any | None,
+    ) -> list[str]:
+        normalized = _normalize(transcript)
+        question = bool(
+            "?" in transcript
+            or re.search(
+                r"^(?:what|where|when|who|which|how|do|does|is|are|can|could|would)\b",
+                normalized,
+            )
+        )
+        cleaned = [
+            intent
+            for intent in observed
+            if intent != "ASK_INFORMATION" or question
+        ]
+        pending_kind = getattr(getattr(pending_offer, "kind", None), "value", None)
+        if (
+            pending_kind in {"CONFIRM_BOOKING", "SLOT_OPTIONS"}
+            and getattr(patient_request, "current_goal", None) == "BOOK_APPOINTMENT"
+            and "RESCHEDULE_APPOINTMENT" in cleaned
+        ):
+            cleaned = [
+                "BOOK_APPOINTMENT" if item == "RESCHEDULE_APPOINTMENT" else item
+                for item in cleaned
+            ]
+        return list(dict.fromkeys(cleaned))
+
+    @staticmethod
+    def _grounded_requirement(
+        field_name: str, raw_text: str, transcript: str
+    ) -> str:
+        if field_name not in {"provider", "location"}:
+            return "UNSPECIFIED"
+        occurrence = re.search(re.escape(raw_text), transcript, re.I)
+        sentence = transcript
+        if occurrence:
+            left = max(
+                transcript.rfind(".", 0, occurrence.start()),
+                transcript.rfind("?", 0, occurrence.start()),
+                transcript.rfind("!", 0, occurrence.start()),
+                transcript.rfind(",", 0, occurrence.start()),
+                transcript.rfind(";", 0, occurrence.start()),
+            )
+            right_candidates = [
+                index
+                for mark in ".?!,;"
+                if (index := transcript.find(mark, occurrence.end())) != -1
+            ]
+            right = min(right_candidates) if right_candidates else len(transcript)
+            sentence = transcript[left + 1 : right]
+        normalized = _normalize(sentence)
+        full = _normalize(transcript)
+        normalized_entity = _normalize(raw_text)
+        hard_word = r"(?:must|only|has to|have to|required|cannot change)"
+        entity_hard = any(
+            normalized_entity
+            and (
+                re.search(
+                    rf"\b{re.escape(normalized_entity)}\b.{{0,20}}\b{hard_word}\b",
+                    segment,
+                )
+                or re.search(
+                    rf"\b{hard_word}\b.{{0,20}}\b{re.escape(normalized_entity)}\b",
+                    segment,
+                )
+            )
+            for segment in (
+                _normalize(item)
+                for item in re.split(r"[.?!;]+", transcript)
+            )
+        )
+        field_hard = bool(
+            field_name == "location"
+            and re.search(r"\b(?:that\s+)?(?:location|clinic)\b.{0,25}\brequired\b", full)
+            or field_name == "provider"
+            and re.search(r"\b(?:that\s+)?(?:doctor|provider)\b.{0,25}\brequired\b", full)
+        )
+        if (
+            re.search(rf"\b{hard_word}\b", normalized)
+            or entity_hard
+            or field_hard
+        ):
+            return "REQUIRED"
+        if re.search(
+            r"\b(?:prefer|preferred|preferably|ideally|if possible)\b",
+            normalized,
+        ):
+            return "PREFERRED"
+        return "UNSPECIFIED"
 
     def _validate_change(
         self,

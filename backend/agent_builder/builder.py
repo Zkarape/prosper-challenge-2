@@ -13,11 +13,14 @@ import json
 from pathlib import Path
 from typing import Union
 
-from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
+
+from observability import get_logger
 
 from .schema import AgentConfig, Edge, Node
 
+
+logger = get_logger("agent_builder")
 
 class AgentBuilder:
     """Builds a runnable Pipecat Flows graph from a declarative AgentConfig."""
@@ -79,7 +82,13 @@ class AgentBuilder:
         async def handler(args: dict, flow_manager: FlowManager):
             # Persist what the caller gave us so later nodes can use it.
             flow_manager.state.update(args)
-            logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
+            logger.bind(
+                event="agent_graph_transition",
+                edge_id=edge.id,
+                function=edge.function,
+                target_node=edge.target,
+                argument_fields=sorted(args),
+            ).info("Agent graph transitioned to the next node")
             next_node = self._make_node(self._nodes_by_name[edge.target])
             return {"status": "success", **args}, next_node
 

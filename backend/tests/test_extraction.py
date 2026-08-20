@@ -1,6 +1,7 @@
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+import json
 import sys
 import unittest
 
@@ -85,6 +86,74 @@ class ExtractionTests(unittest.TestCase):
         )
         self.assertEqual(result.parsed.provider.requirement.value, "UNSPECIFIED")
 
+    def test_requirement_words_are_bound_to_the_relevant_entity(self):
+        wire = keep_extraction()
+        wire["provider"] = {
+            "operation": "SET",
+            "raw_text": "Dr. Linda Ramirez",
+            "requirement": "REQUIRED",
+            "evidence": "Dr. Linda Ramirez",
+        }
+        wire["location"] = {
+            "operation": "SET",
+            "raw_text": "Richmond",
+            "requirement": "UNSPECIFIED",
+            "evidence": "Richmond",
+        }
+        transcript = (
+            "I need an MRI with Dr. Linda Ramirez in Richmond. "
+            "Richmond is required."
+        )
+        validated = self.validate(wire, transcript)
+        self.assertEqual(validated.patch["provider"]["requirement"], "UNSPECIFIED")
+        self.assertEqual(validated.patch["location"]["requirement"], "REQUIRED")
+
+    def test_accept_ignores_non_authoritative_selection_text(self):
+        wire = keep_extraction()
+        wire["pending_answer"] = {
+            "value": "ACCEPT",
+            "raw_selection_text": "yes that works",
+            "ordinal": None,
+            "evidence": "yes that works",
+        }
+        pending = PendingOffer(
+            kind=OfferKind.ALTERNATIVE_LOCATION,
+            request_fingerprint=self.request.fingerprint(),
+            catalog_version=self.catalog.version,
+            options=[OfferOption("alternative", "Mission District", {})],
+        )
+        validated = self.validate(wire, "yes that works", pending)
+        self.assertEqual(validated.pending_answer, "ACCEPT")
+        self.assertIsNone(validated.raw_selection_text)
+
+    def test_reported_conflict_is_not_changed_to_information_intent(self):
+        wire = keep_extraction()
+        wire["observed_intents"] = ["ASK_INFORMATION"]
+        wire["referral_status"] = {
+            "operation": "SET",
+            "value": "CONFLICTING",
+            "evidence": "sent, but the front desk never received it",
+        }
+        transcript = "The referral was sent, but the front desk never received it."
+        validated = self.validate(wire, transcript)
+        self.assertNotIn("observed_intents", validated.patch)
+        self.assertEqual(
+            validated.patch["referral_status"]["value"], "CONFLICTING"
+        )
+
+    def test_catalog_alias_guard_recovers_an_omitted_appointment_mention(self):
+        self.request.current_goal = "BOOK_APPOINTMENT"
+        validator = ExtractionValidator(self.catalog)
+        validated = validator.validate_and_convert(
+            extraction=TurnExtraction.model_validate(keep_extraction()),
+            transcript="I need a follow-up with my doctor.",
+            patient_request=self.request,
+            pending_offer=None,
+        )
+        self.assertEqual(
+            validated.patch["appointment_type"]["raw_text"], "follow up"
+        )
+
     def test_service_retries_once_with_validation_feedback(self):
         local = RuleBasedExtractor(self.catalog)
 
@@ -149,6 +218,44 @@ class ExtractionTests(unittest.TestCase):
         )
         self.assertIs(responses.kwargs["text_format"], TurnExtraction)
         self.assertEqual(result.telemetry.cached_input_tokens, 3)
+
+    def test_full_history_is_an_explicit_extractor_strategy(self):
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def parse(self, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    output_parsed=TurnExtraction.model_validate(keep_extraction()),
+                    usage=SimpleNamespace(
+                        input_tokens=20,
+                        output_tokens=5,
+                        input_tokens_details=SimpleNamespace(cached_tokens=0),
+                    ),
+                    id="resp_history_test",
+                    status="completed",
+                )
+
+        responses = FakeResponses()
+        extractor = OpenAIExtractor(
+            client=SimpleNamespace(responses=responses),
+            model="test-model",
+            context_strategy="full_history",
+        )
+        extractor.extract(
+            patient_text="Actually, any doctor is fine.",
+            patient_request=self.request.to_dict(),
+            pending_offer=None,
+            conversation_history=[
+                {"role": "patient", "text": "I prefer Dr. Lee."},
+                {"role": "assistant", "text": "I will look for Dr. Lee."},
+            ],
+        )
+        payload = json.loads(responses.kwargs["input"][1]["content"])
+        self.assertEqual(len(payload["conversation_history"]), 2)
+        compact = extractor.for_context_strategy("compact")
+        self.assertEqual(compact.context_strategy, "compact")
 
     def test_usage_event_prices_cached_tokens_without_double_counting(self):
         telemetry = ExtractionTelemetry(

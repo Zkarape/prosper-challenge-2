@@ -10,6 +10,7 @@ previously trapped inside one Python process:
 - the active server-authored offer and its hidden values;
 - rejected alternatives and the latest engine result;
 - confirmed bookings and booking attempts;
+- evaluation run history, summaries, and per-case stage results;
 - immutable catalog snapshots and published agent configurations.
 
 The workers still cache the catalog in memory because it is small and immutable.

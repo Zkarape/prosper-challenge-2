@@ -43,6 +43,7 @@ class Extractor(Protocol):
         patient_text: str,
         patient_request: dict[str, Any],
         pending_offer: dict[str, Any] | None,
+        conversation_history: list[dict[str, str]] | None = None,
         corrective_feedback: str | None = None,
     ) -> ExtractionResult: ...
 
@@ -50,13 +51,33 @@ class Extractor(Protocol):
 class OpenAIExtractor:
     mode = "OPENAI_STRUCTURED"
 
-    def __init__(self, *, client: Any | None = None, model: str | None = None):
+    def __init__(
+        self,
+        *,
+        client: Any | None = None,
+        model: str | None = None,
+        context_strategy: str = "bounded_recent",
+    ):
+        if context_strategy not in {"compact", "bounded_recent", "full_history"}:
+            raise ValueError(
+                "context_strategy must be 'compact', 'bounded_recent', or 'full_history'"
+            )
         if client is None:
             from openai import OpenAI
 
             client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.client = client
         self.model = model or os.getenv("EXTRACTION_MODEL", "gpt-5.4-mini")
+        self.context_strategy = context_strategy
+
+    def for_context_strategy(self, context_strategy: str) -> "OpenAIExtractor":
+        """Create a paired evaluator variant without changing model or client."""
+
+        return OpenAIExtractor(
+            client=self.client,
+            model=self.model,
+            context_strategy=context_strategy,
+        )
 
     def extract(
         self,
@@ -64,6 +85,7 @@ class OpenAIExtractor:
         patient_text: str,
         patient_request: dict[str, Any],
         pending_offer: dict[str, Any] | None,
+        conversation_history: list[dict[str, str]] | None = None,
         corrective_feedback: str | None = None,
     ) -> ExtractionResult:
         payload = {
@@ -71,6 +93,10 @@ class OpenAIExtractor:
             "pending_offer": pending_offer,
             "latest_patient_utterance": patient_text,
         }
+        if self.context_strategy == "bounded_recent":
+            payload["recent_context"] = (conversation_history or [])[-2:]
+        elif self.context_strategy == "full_history":
+            payload["conversation_history"] = conversation_history or []
         input_messages = [
             {"role": "system", "content": EXTRACTION_PROMPT},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

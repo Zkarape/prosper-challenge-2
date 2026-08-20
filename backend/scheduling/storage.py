@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
+from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 from threading import RLock
@@ -35,6 +36,7 @@ class InMemoryConversationStore:
     def __init__(self):
         self.conversations: dict[str, Any] = {}
         self.usage_events: list[UsageEvent] = []
+        self.evaluation_runs: dict[str, dict[str, Any]] = {}
 
     def create(self, conversation: Any, *, catalog_hash: str) -> None:
         self.conversations[conversation.patient_request.conversation_id] = conversation
@@ -91,6 +93,41 @@ class InMemoryConversationStore:
         ]
         return _aggregate_evaluations(evaluations)
 
+    def save_evaluation_run(self, run: dict[str, Any]) -> None:
+        self.evaluation_runs[run["run_id"]] = deepcopy(run)
+
+    def get_evaluation_run(self, run_id: str) -> dict[str, Any] | None:
+        run = self.evaluation_runs.get(run_id)
+        return deepcopy(run) if run is not None else None
+
+    def latest_evaluation_run(self) -> dict[str, Any] | None:
+        pipeline_runs = [
+            item
+            for item in self.evaluation_runs.values()
+            if item.get("kind") != "CONTEXT_STRATEGY_COMPARISON"
+        ]
+        if not pipeline_runs:
+            return None
+        latest = max(
+            pipeline_runs,
+            key=lambda item: (item["started_at"], item["run_id"]),
+        )
+        return deepcopy(latest)
+
+    def latest_context_comparison(self) -> dict[str, Any] | None:
+        runs = [
+            item
+            for item in self.evaluation_runs.values()
+            if item.get("kind") == "CONTEXT_STRATEGY_COMPARISON"
+        ]
+        if not runs:
+            return None
+        latest = max(
+            runs,
+            key=lambda item: (item["started_at"], item["run_id"]),
+        )
+        return deepcopy(latest)
+
     def sync_configuration(
         self, *, catalog: Catalog, agent_config: dict[str, Any] | None
     ) -> None:
@@ -144,15 +181,22 @@ class PostgresRuntimeStore:
         try:
             with self.pool.connection() as connection:
                 row = connection.execute(
-                    "SELECT to_regclass('public.conversations') AS table_name"
+                    """
+                    SELECT to_regclass('public.conversations') AS conversations,
+                           to_regclass('public.evaluation_runs') AS evaluation_runs
+                    """
                 ).fetchone()
         except Exception as exc:
             raise RuntimeError(
                 "Could not connect to PostgreSQL. Check DATABASE_URL and database access."
             ) from exc
-        if not row or row["table_name"] is None:
+        if not row or row["conversations"] is None:
             raise RuntimeError(
                 "PostgreSQL is connected but not migrated. Run `make db-migrate`."
+            )
+        if row["evaluation_runs"] is None:
+            raise RuntimeError(
+                "PostgreSQL migrations are outdated. Run `make db-migrate`."
             )
 
     def sync_configuration(
@@ -596,6 +640,74 @@ class PostgresRuntimeStore:
                 (self.clinic_id,),
             ).fetchall()
         return _aggregate_evaluations([_json_safe_row(row) for row in rows])
+
+    def save_evaluation_run(self, run: dict[str, Any]) -> None:
+        """Upsert the complete, immutable-to-the-UI evaluation snapshot."""
+
+        from psycopg.types.json import Jsonb
+
+        with self.pool.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO evaluation_runs
+                    (clinic_id, run_id, status, started_at, result)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (clinic_id, run_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    result = EXCLUDED.result,
+                    updated_at = now()
+                """,
+                (
+                    self.clinic_id,
+                    run["run_id"],
+                    run["status"],
+                    run["started_at"],
+                    Jsonb(run),
+                ),
+            )
+
+    def get_evaluation_run(self, run_id: str) -> dict[str, Any] | None:
+        with self.pool.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT result
+                FROM evaluation_runs
+                WHERE clinic_id = %s AND run_id = %s
+                """,
+                (self.clinic_id, run_id),
+            ).fetchone()
+        return deepcopy(row["result"]) if row is not None else None
+
+    def latest_evaluation_run(self) -> dict[str, Any] | None:
+        with self.pool.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT result
+                FROM evaluation_runs
+                WHERE clinic_id = %s
+                  AND coalesce(result->>'kind', 'PIPELINE')
+                      <> 'CONTEXT_STRATEGY_COMPARISON'
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT 1
+                """,
+                (self.clinic_id,),
+            ).fetchone()
+        return deepcopy(row["result"]) if row is not None else None
+
+    def latest_context_comparison(self) -> dict[str, Any] | None:
+        with self.pool.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT result
+                FROM evaluation_runs
+                WHERE clinic_id = %s
+                  AND result->>'kind' = 'CONTEXT_STRATEGY_COMPARISON'
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT 1
+                """,
+                (self.clinic_id,),
+            ).fetchone()
+        return deepcopy(row["result"]) if row is not None else None
 
     def is_available(self, slot_id: str) -> bool:
         with self.pool.connection() as connection:
