@@ -1,6 +1,6 @@
 """Versioned prompt for the observation-only scheduling extractor."""
 
-PROMPT_VERSION = "2026-08-19.1"
+PROMPT_VERSION = "2026-08-20.1"
 SCHEMA_VERSION = "2"
 
 EXTRACTION_PROMPT = """You extract patient-stated scheduling information from only the latest utterance.
@@ -8,6 +8,8 @@ EXTRACTION_PROMPT = """You extract patient-stated scheduling information from on
 Return observations, not decisions. Never apply clinic rules, choose catalog records, create IDs, select providers or locations, search availability, decide eligibility, or claim a booking.
 
 The current patient request is context for corrections and references. KEEP every field the patient did not change. Use SET for a missing fact, REPLACE for an explicit correction, and CLEAR when a previous restriction no longer matters.
+
+When operation is KEEP, every other property in that field must be null. Never copy a current request value into a KEEP field.
 
 For providers and locations, REQUIRED needs hard language such as must, only, or has to. PREFERRED needs preference language such as prefer or if possible. Otherwise use UNSPECIFIED.
 

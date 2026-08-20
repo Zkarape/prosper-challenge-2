@@ -62,6 +62,41 @@ class SchedulingRequest:
     time: TimePreference | None = None
     primary_priority: PreferencePriority = PreferencePriority.UNSPECIFIED
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SchedulingRequest":
+        """Restore the compact request snapshot kept by durable storage."""
+
+        def entity(name: str) -> EntityRequest | None:
+            item = value.get(name)
+            if not item:
+                return None
+            return EntityRequest(
+                raw_text=item["raw_text"],
+                requirement=Requirement(item.get("requirement", "UNSPECIFIED")),
+            )
+
+        time_value = value.get("time")
+        return cls(
+            conversation_id=value["conversation_id"],
+            current_goal=value.get("current_goal"),
+            patient_status=PatientStatus(value.get("patient_status", "UNKNOWN")),
+            referral_status=ReferralStatus(value.get("referral_status", "UNKNOWN")),
+            appointment_type=entity("appointment_type"),
+            provider=entity("provider"),
+            location=entity("location"),
+            time=(
+                TimePreference(
+                    raw_text=time_value["raw_text"],
+                    objective=time_value.get("objective", "UNSPECIFIED"),
+                )
+                if time_value
+                else None
+            ),
+            primary_priority=PreferencePriority(
+                value.get("primary_priority", "UNSPECIFIED")
+            ),
+        )
+
     def apply_patch(self, patch: dict[str, Any]) -> "SchedulingRequest":
         """Apply a trusted patch and return a new patient request."""
 

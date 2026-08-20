@@ -23,29 +23,43 @@ test("server-renders the Prosper Agent Studio shell", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Prosper Agent Studio<\/title>/i);
-  assert.match(html, /Talk to your scheduling agent/);
-  assert.match(html, /Text conversation/);
-  assert.match(html, /Decision trace/);
-  assert.match(html, /Connecting/);
-  assert.match(html, /Deterministic scheduling service/);
+  assert.match(html, /Test agent/);
+  assert.match(html, /Agent graph/);
+  assert.match(html, /Evaluations/);
+  assert.match(html, /Loading voice test/);
+  assert.match(html, /Context usage/);
+  assert.match(html, /Session total/);
+  assert.doesNotMatch(html, /Text conversation|See what happened underneath|Pipeline inspector/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
 test("ships product metadata and removes the disposable starter", async () => {
-  const [layout, page, voicePanel, packageJson] = await Promise.all([
+  const [layout, page, graphEditor, voicePanel, evaluationsPanel, packageJson] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/agent-graph-editor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/voice-call-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/evaluations-panel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(layout, /Prosper Agent Studio/);
   assert.match(layout, /og\.png/);
-  assert.match(page, /patient request/i);
+  assert.match(graphEditor, /Add a step/i);
+  assert.match(graphEditor, /Save workflow/i);
+  assert.match(graphEditor, /conversation.*subagent.*tool.*decision.*handoff.*end/is);
+  assert.match(graphEditor, /\/api\/agent/);
+  assert.match(page, /NEXT_PUBLIC_VOICE_AGENT_URL/);
   assert.match(page, /NEXT_PUBLIC_SCHEDULING_API_URL/);
   assert.doesNotMatch(page, /window\.open/);
   assert.match(voicePanel, /aria-label="Start voice call"/);
   assert.doesNotMatch(voicePanel, /role="dialog"|voice-call-backdrop/);
+  assert.match(evaluationsPanel, /Prove the scheduling pipeline/);
+  assert.match(evaluationsPanel, /Run selected case/);
+  assert.match(evaluationsPanel, /Run all 40/);
+  assert.match(evaluationsPanel, /\/api\/evaluations\/dataset/);
+  assert.match(evaluationsPanel, /\/api\/evaluations\/runs/);
+  assert.doesNotMatch(evaluationsPanel, /response_requirements|Safety assertions/);
   assert.match(packageJson, /"name": "prosper-agent-studio"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("../public/og.png", import.meta.url));

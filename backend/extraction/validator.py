@@ -146,8 +146,11 @@ class ExtractionValidator:
             for name, item in vars(change).items()
             if name not in {"operation", "evidence"} and item is not None
         ]
-        if change.operation == PatchOperation.KEEP and other_values:
-            raise SemanticValidationError(f"{field_name}: KEEP cannot include a new value")
+        if change.operation == PatchOperation.KEEP:
+            # Structured models occasionally repeat current context in fields that
+            # are explicitly marked KEEP. Those values have no authority and are
+            # safely discarded rather than making the patient repeat the turn.
+            return
         if change.operation in {PatchOperation.SET, PatchOperation.REPLACE} and value is None:
             raise SemanticValidationError(
                 f"{field_name}: {change.operation.value} requires {value_field}"

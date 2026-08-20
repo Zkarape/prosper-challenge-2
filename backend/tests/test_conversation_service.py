@@ -49,6 +49,10 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertEqual(fourth["booking"]["offer_id"], third["pending_offer"]["offer_id"])
         self.assertIsNone(fourth["pending_offer"])
         self.assertIn("booked", fourth["assistant_message"])
+        evaluation = self.service.conversation_evaluation(self.conversation_id)
+        self.assertEqual(evaluation["status"], "COMPLETED")
+        self.assertEqual(evaluation["outcome"], "BOOKING_CONFIRMED")
+        self.assertTrue(evaluation["safe"])
 
     def test_unclear_slot_selection_does_not_guess(self):
         self.turn(
@@ -75,6 +79,28 @@ class ConversationServiceTests(unittest.TestCase):
         self.assertEqual(len(third["offered_slots"]), 1)
         self.assertIn("earliest opening", third["assistant_message"])
         self.assertNotIn("day of the week", third["assistant_message"].lower())
+
+    def test_ineligible_new_patient_is_offered_a_safe_recovery_path(self):
+        self.turn("I want to book an appointment for my knee MRI.")
+        blocked = self.turn("I am a new patient.")
+
+        self.assertEqual(blocked["pending_offer"]["kind"], "RECOVERY_OPTIONS")
+        self.assertIn("different appointment type", blocked["assistant_message"])
+        self.assertIn("clinic staff", blocked["assistant_message"])
+
+        evaluation = self.service.finish_conversation(self.conversation_id)
+        self.assertEqual(evaluation["outcome"], "CORRECTLY_BLOCKED")
+        self.assertTrue(evaluation["safe"])
+
+        # Use a new conversation to verify the recovery branch itself.
+        self.conversation_id = self.service.create_conversation()["conversation_id"]
+        self.turn("I want to book an appointment for my knee MRI.")
+        self.turn("I am a new patient.")
+
+        recovery = self.turn("I want a different appointment.")
+        self.assertIsNone(recovery["patient_request"]["appointment_type"])
+        self.assertEqual(recovery["patient_request"]["patient_status"], "NEW")
+        self.assertIn("What type of appointment", recovery["assistant_message"])
 
     def test_declined_confirmation_does_not_book(self):
         self.turn(

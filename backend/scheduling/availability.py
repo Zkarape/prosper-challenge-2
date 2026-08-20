@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from .catalog import Catalog
@@ -34,12 +34,26 @@ class Slot:
         }
 
 
+class ReservationStore(Protocol):
+    """The small availability seam needed by the deterministic mock source."""
+
+    def is_available(self, slot_id: str) -> bool: ...
+
+    def reserve(self, slot_id: str) -> None: ...
+
+
 class MockAvailability:
     """Generate stable slots from candidate IDs instead of random data."""
 
-    def __init__(self, catalog: Catalog, timezone: str = "America/Los_Angeles"):
+    def __init__(
+        self,
+        catalog: Catalog,
+        timezone: str = "America/Los_Angeles",
+        reservation_store: ReservationStore | None = None,
+    ):
         self.catalog = catalog
         self.default_timezone = timezone
+        self.reservation_store = reservation_store
         self._booked_slot_ids: set[str] = set()
 
     def find_slots(
@@ -71,7 +85,7 @@ class MockAvailability:
             slot_id = "slot_" + sha256(
                 f"{candidate_id}:{start.isoformat()}".encode()
             ).hexdigest()[:12]
-            if slot_id in self._booked_slot_ids:
+            if not self.is_available(slot_id):
                 continue
             slots.append(Slot(slot_id, candidate_id, start, end))
             if len(slots) == limit:
@@ -79,9 +93,14 @@ class MockAvailability:
         return slots
 
     def is_available(self, slot_id: str) -> bool:
+        if self.reservation_store is not None:
+            return self.reservation_store.is_available(slot_id)
         return slot_id not in self._booked_slot_ids
 
     def reserve(self, slot_id: str) -> None:
+        if self.reservation_store is not None:
+            self.reservation_store.reserve(slot_id)
+            return
         if not self.is_available(slot_id):
             raise ValueError("SLOT_NO_LONGER_AVAILABLE")
         self._booked_slot_ids.add(slot_id)

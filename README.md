@@ -6,7 +6,8 @@ Voice AI for healthcare scheduling with an embedded live-call tester, observatio
 - **Phase 2** — a context-management approach so a scheduling agent can reliably and cost-effectively navigate a large catalog of locations, doctors, and appointment types.
 
 ```
-browser mic -> Pipecat WebRTC -> ElevenLabs STT -> completed patient turn
+browser mic -> Pipecat WebRTC -> ElevenLabs STT fragments
+    -> local VAD + semantic turn detection -> completed patient turn
     -> structured LLM extraction -> deterministic scheduler
     -> checked response -> ElevenLabs TTS -> browser audio
 ```
@@ -14,6 +15,11 @@ browser mic -> Pipecat WebRTC -> ElevenLabs STT -> completed patient turn
 The live call is rendered inside Prosper Agent Studio. The user is never redirected to Pipecat's prebuilt client.
 
 Voice and text now use the same `ConversationService`. The LLM reports only patient-stated facts; application code applies defaults, resolves the catalog, checks policy and availability, owns pending offers, and confirms a booking only after the mock booking system succeeds.
+
+The **Agent graph** tab is a real workflow editor backed by
+`backend/example_flow.json`: nodes can be added, positioned, configured, connected,
+validated, and saved. See [PHASE1_WORKFLOW.md](PHASE1_WORKFLOW.md) for the node, edge,
+and tool contracts and a short demo walkthrough.
 
 ## Quickstart
 
@@ -34,9 +40,19 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3001`, press the large recording button on the Workbench, and allow microphone access. Speak naturally and pause when finished. The transcript is finalized after end-of-speech detection, sent to the LLM, and both sides of the conversation appear on the same screen while the assistant audio plays there.
+Open `http://localhost:3001`, press the recording button under **Test agent**, and allow microphone access. Speak naturally and pause when finished. Pipecat combines STT fragments until the patient’s thought is complete, then sends one authoritative turn to the scheduling pipeline. Both sides of that committed conversation appear on the same screen while the assistant audio plays there.
 
-## Text workbench
+After a processed turn, open **Agent graph** to see which stages ran and inspect their validated inputs, decisions, token usage, and booking result.
+
+By default the demo uses process-local memory. For durable conversations and safe
+multi-worker booking, follow [SCALING.md](SCALING.md) to start PostgreSQL and set
+`DATABASE_URL`.
+
+Conversation-level token, cost, latency and outcome evaluation is documented in
+[EVALUATION.md](EVALUATION.md). The ledger records every actual model call and does
+not fabricate usage for deterministic response writing.
+
+## Scheduling API
 
 The deterministic text scheduling loop runs without OpenAI or ElevenLabs keys:
 
@@ -45,15 +61,7 @@ make install
 make api
 ```
 
-In a second terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The frontend sends text turns to `http://127.0.0.1:8000`, then renders the patient request, decision trace, alternatives, offered slots, and mock booking result. The main voice surface connects directly to the Pipecat runner at `http://127.0.0.1:7860`; it never opens another page or window.
+The text API remains available at `http://127.0.0.1:8000` for automated tests and direct API debugging. The product UI connects directly to the Pipecat runner at `http://127.0.0.1:7860`; it never opens another page or window.
 
 `EXTRACTOR_MODE=auto` uses OpenAI Structured Outputs when `OPENAI_API_KEY` is available and the local structured fallback otherwise. The default extraction model is configured by `EXTRACTION_MODEL`.
 
@@ -61,7 +69,7 @@ The frontend sends text turns to `http://127.0.0.1:8000`, then renders the patie
 
 | Path | Responsibility |
 | --- | --- |
-| `backend/bot.py` | Pipecat WebRTC, end-of-speech detection, the shared scheduling turn service, live diagnostics, and ElevenLabs STT/TTS. |
+| `backend/bot.py` | Pipecat WebRTC, local VAD and semantic turn detection, STT-fragment aggregation, the shared scheduling turn service, live diagnostics, and ElevenLabs STT/TTS. |
 | `frontend/app/voice-call-panel.tsx` | Embedded call controls, microphone connection, browser audio, and live patient/assistant transcript. |
 | `backend/extraction/` | Strict Pydantic extraction schema, prompt, OpenAI Responses adapter, telemetry, and semantic validator. |
 | `backend/scheduling/` | Patient request reducer, content-hashed catalog resolution, deterministic rules, availability, booking, and shared turn service. |

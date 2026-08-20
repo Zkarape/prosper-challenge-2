@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import sys
+import time
 import unittest
 
 
@@ -10,6 +11,8 @@ if str(BACKEND) not in sys.path:
 
 # API contract tests must not change behavior based on a developer's local key.
 os.environ["EXTRACTOR_MODE"] = "local"
+os.environ["DATABASE_URL"] = ""
+os.environ["MIGRATION_DATABASE_URL"] = ""
 
 from fastapi.testclient import TestClient
 
@@ -20,6 +23,14 @@ class SchedulingApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
+
+    def wait_for_evaluation(self, run_id: str) -> dict:
+        for _ in range(200):
+            payload = self.client.get(f"/api/evaluations/runs/{run_id}").json()
+            if payload["status"] != "RUNNING":
+                return payload
+            time.sleep(0.01)
+        self.fail("evaluation run did not finish")
 
     def test_health_and_text_turn_contract(self):
         health = self.client.get("/health")
@@ -56,6 +67,90 @@ class SchedulingApiTests(unittest.TestCase):
             json={"utterance": "Book a dental cleaning"},
         )
         self.assertEqual(response.status_code, 404)
+
+    def test_conversation_can_be_finalized_and_evaluated(self):
+        created = self.client.post("/api/conversations").json()
+        conversation_id = created["conversation_id"]
+        self.client.post(
+            f"/api/conversations/{conversation_id}/turns",
+            json={"utterance": "Where does Dr. Wei Lee work?"},
+        )
+        ended = self.client.post(
+            f"/api/conversations/{conversation_id}/end",
+            json={"outcome": "AUTO"},
+        )
+        self.assertEqual(ended.status_code, 200)
+        self.assertEqual(ended.json()["outcome"], "INFORMATION_ANSWERED")
+        self.assertTrue(ended.json()["safe"])
+
+        evaluation = self.client.get(
+            f"/api/conversations/{conversation_id}/evaluation"
+        )
+        self.assertEqual(evaluation.status_code, 200)
+        self.assertIn("total_tokens", evaluation.json())
+
+        summary = self.client.get("/api/evaluations/summary")
+        self.assertEqual(summary.status_code, 200)
+        self.assertGreaterEqual(summary.json()["safe_completed_task_count"], 1)
+
+    def test_context_management_dataset_is_available_to_the_ui(self):
+        response = self.client.get("/api/evaluations/dataset")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["case_count"], 40)
+        self.assertEqual(payload["defined_case_count"], 40)
+        self.assertEqual(payload["manual_authored_case_count"], 2)
+        self.assertEqual(payload["cases"][0]["test_case_id"], "case_001")
+
+    def test_agent_workflow_is_available_and_invalid_edits_are_rejected(self):
+        response = self.client.get("/api/agent")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["validation"]["valid"])
+        self.assertEqual(payload["validation"]["node_count"], 7)
+        self.assertEqual(payload["validation"]["tool_count"], 5)
+        self.assertEqual(payload["config"]["initial_node"], "welcome")
+
+        broken = {**payload["config"], "initial_node": "missing_node"}
+        rejected = self.client.put("/api/agent", json={"config": broken})
+        self.assertEqual(rejected.status_code, 422)
+        self.assertIn("not defined", rejected.json()["detail"])
+
+    def test_one_case_runs_through_all_four_graded_stages(self):
+        response = self.client.post(
+            "/api/evaluations/runs",
+            json={"case_ids": ["case_001"], "extractor": "local"},
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = self.wait_for_evaluation(response.json()["run_id"])
+        self.assertEqual(payload["summary"]["case_count"], 1)
+        self.assertEqual(payload["summary"]["passed_case_count"], 1)
+        self.assertEqual(
+            [stage["id"] for stage in payload["cases"][0]["stages"]],
+            ["extraction", "validation", "state", "engine"],
+        )
+        self.assertTrue(
+            all(stage["status"] == "PASS" for stage in payload["cases"][0]["stages"])
+        )
+
+    def test_all_40_cases_execute_and_latest_run_is_available(self):
+        response = self.client.post(
+            "/api/evaluations/runs",
+            json={"extractor": "local"},
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = self.wait_for_evaluation(response.json()["run_id"])
+        self.assertEqual(payload["summary"]["case_count"], 40)
+        self.assertEqual(len(payload["cases"]), 40)
+        self.assertEqual(
+            payload["summary"]["passed_case_count"]
+            + payload["summary"]["failed_case_count"],
+            40,
+        )
+
+        latest = self.client.get("/api/evaluations/runs/latest")
+        self.assertEqual(latest.status_code, 200)
+        self.assertEqual(latest.json()["run_id"], payload["run_id"])
 
 
 if __name__ == "__main__":

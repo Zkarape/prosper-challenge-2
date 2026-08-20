@@ -1,5 +1,17 @@
 # Solution overview
 
+## Voice agent builder
+
+The Phase 1 editor loads the versioned workflow in `backend/example_flow.json` through
+the scheduling API. It provides a draggable canvas, six explicit node types, four edge
+types, scoped tool assignment, a focused node inspector, validation, and atomic saving.
+The example now describes the actual safe scheduling architecture rather than a generic
+four-step appointment script. A new Pipecat call loads the saved first message and
+ElevenLabs voice, while runtime-stage metadata connects live call traces back to nodes.
+
+The graph orchestrates conversation and capability scope; it cannot override the
+deterministic policy and booking boundary described below.
+
 The scheduling agent uses an LLM for one narrow job: report what the patient said in a
 strict schema. Application code validates those observations, resolves raw phrases against
 the clinic catalog, evaluates policy, ranks candidates, checks availability, and writes a
@@ -21,8 +33,9 @@ patient text
 
 ## Embedded live-voice path
 
-Pipecat provides WebRTC audio transport and ElevenLabs commits the patient transcript
-after end-of-speech detection. That committed turn calls the same `ConversationService`
+Pipecat provides WebRTC audio transport, local Silero VAD, and semantic turn detection.
+ElevenLabs may commit multiple STT fragments, but the voice adapter buffers them until
+Pipecat declares the patient’s thought complete. That one authoritative turn calls the same `ConversationService`
 as typed messages: OpenAI performs observation-only extraction, deterministic code
 applies defaults and scheduling rules, and ElevenLabs speaks only the checked response.
 RTVI server messages stream the resulting state patch, rule trace, selected action,

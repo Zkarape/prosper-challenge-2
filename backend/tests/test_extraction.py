@@ -9,7 +9,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from conversation import OfferKind, OfferOption, PendingOffer
+from conversation import OfferKind, OfferOption, PendingOffer, UsageEvent
 from extraction import ExtractionValidator, OpenAIExtractor, SemanticValidationError, TurnExtraction
 from extraction.llm_extractor import ExtractionResult, ExtractionTelemetry
 from extraction.schema import keep_extraction
@@ -31,11 +31,11 @@ class ExtractionTests(unittest.TestCase):
             pending_offer=pending,
         )
 
-    def test_keep_cannot_smuggle_a_new_value(self):
+    def test_keep_values_are_discarded_without_changing_the_request(self):
         wire = keep_extraction()
         wire["provider"]["raw_text"] = "Dr. Lee"
-        with self.assertRaisesRegex(SemanticValidationError, "KEEP"):
-            self.validate(wire, "Dr. Lee")
+        validated = self.validate(wire, "Dr. Lee")
+        self.assertNotIn("provider", validated.patch)
 
     def test_evidence_must_come_from_latest_utterance(self):
         wire = keep_extraction()
@@ -98,7 +98,12 @@ class ExtractionTests(unittest.TestCase):
                 self.calls.append(kwargs.get("corrective_feedback"))
                 if len(self.calls) == 1:
                     wire = keep_extraction()
-                    wire["provider"]["raw_text"] = "invented"
+                    wire["provider"] = {
+                        "operation": "SET",
+                        "raw_text": "invented",
+                        "requirement": "UNSPECIFIED",
+                        "evidence": "invented",
+                    }
                     return ExtractionResult(
                         TurnExtraction.model_validate(wire),
                         ExtractionTelemetry(None, "test", "test", 0, 0, 0, 0, None, "completed"),
@@ -114,7 +119,7 @@ class ExtractionTests(unittest.TestCase):
         conversation_id = service.create_conversation()["conversation_id"]
         response = service.process_turn(conversation_id, "Book a dental cleaning")
         self.assertEqual(len(extractor.calls), 2)
-        self.assertIn("KEEP", extractor.calls[1])
+        self.assertIn("evidence", extractor.calls[1])
         self.assertEqual(response["patient_request"]["appointment_type"]["raw_text"], "dental cleaning")
 
     def test_openai_adapter_uses_responses_parse_with_the_strict_model(self):
@@ -144,6 +149,73 @@ class ExtractionTests(unittest.TestCase):
         )
         self.assertIs(responses.kwargs["text_format"], TurnExtraction)
         self.assertEqual(result.telemetry.cached_input_tokens, 3)
+
+    def test_usage_event_prices_cached_tokens_without_double_counting(self):
+        telemetry = ExtractionTelemetry(
+            "gpt-5.4-mini",
+            "test",
+            "test",
+            600,
+            100,
+            90,
+            420,
+            "resp_pricing",
+            "completed",
+        )
+        event = UsageEvent.from_telemetry(
+            conversation_id="conv_test",
+            turn_id="turn_test",
+            stage="EXTRACTION",
+            telemetry=telemetry,
+        )
+        self.assertEqual(event.total_tokens, 690)
+        self.assertEqual(event.estimated_cost_usd, 0.0007875)
+
+    def test_conversation_evaluation_sums_all_model_calls(self):
+        local = RuleBasedExtractor(self.catalog)
+
+        class MeteredExtractor:
+            mode = "OPENAI_STRUCTURED"
+
+            def __init__(self):
+                self.number = 0
+
+            def extract(self, **kwargs):
+                self.number += 1
+                parsed = local.extract(**kwargs).parsed
+                return ExtractionResult(
+                    parsed,
+                    ExtractionTelemetry(
+                        "gpt-5.4-mini",
+                        "test",
+                        "test",
+                        600,
+                        100,
+                        90,
+                        420,
+                        f"resp_{self.number}",
+                        "completed",
+                    ),
+                )
+
+        service = ConversationService(
+            self.catalog,
+            extractor=MeteredExtractor(),
+            today_provider=lambda: date(2026, 8, 19),
+        )
+        conversation_id = service.create_conversation()["conversation_id"]
+        service.process_turn(conversation_id, "Book a dental cleaning")
+        service.process_turn(conversation_id, "I am a new patient")
+        evaluation = service.finish_conversation(
+            conversation_id, forced_outcome="PATIENT_ABANDONED"
+        )
+        self.assertEqual(evaluation["model_call_count"], 2)
+        self.assertEqual(evaluation["total_tokens"], 1380)
+        self.assertEqual(evaluation["turn_count"], 2)
+        self.assertEqual(evaluation["outcome"], "PATIENT_ABANDONED")
+        summary = service.evaluation_summary()
+        self.assertEqual(summary["total_tokens_finalized"], 1380)
+        self.assertIsNone(summary["tokens_per_safe_completed_task"])
 
 
 if __name__ == "__main__":

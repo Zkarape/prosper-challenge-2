@@ -84,8 +84,8 @@ class AgentBuilder:
             return {"status": "success", **args}, next_node
 
         return FlowsFunctionSchema(
-            name=edge.function,
-            description=edge.description,
+            name=edge.function or edge.id,
+            description=edge.description or edge.condition or edge.label,
             properties=edge.properties,
             required=edge.required,
             handler=handler,

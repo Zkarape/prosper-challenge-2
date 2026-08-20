@@ -9,7 +9,6 @@ import {
   VoiceVisualizer,
   usePipecatClient,
   usePipecatClientTransportState,
-  usePipecatConversation,
   useRTVIClientEvent,
 } from "@pipecat-ai/client-react";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
@@ -17,6 +16,12 @@ import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 type VoiceCallPanelProps = {
   endpoint: string;
   onSchedulingTurn: (turn: unknown) => void;
+};
+
+type DisplayMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
 };
 
 function connectionLabel(state: TransportState): string {
@@ -32,20 +37,8 @@ function connectionLabel(state: TransportState): string {
     case "error":
       return "Connection error";
     default:
-      return "Not connected";
+      return "Ready to start";
   }
-}
-
-function readablePart(value: unknown): string {
-  if (typeof value === "string" || typeof value === "number") return String(value);
-  if (!value || typeof value !== "object") return "";
-  if ("spoken" in value || "unspoken" in value) {
-    const output = value as { spoken?: unknown; unspoken?: unknown };
-    return `${typeof output.spoken === "string" ? output.spoken : ""}${
-      typeof output.unspoken === "string" ? output.unspoken : ""
-    }`;
-  }
-  return "";
 }
 
 function unwrapServerMessage(value: unknown): { type?: unknown; payload?: unknown } | null {
@@ -61,14 +54,36 @@ function unwrapServerMessage(value: unknown): { type?: unknown; payload?: unknow
 function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
   const client = usePipecatClient();
   const state = usePipecatClientTransportState();
-  const { messages } = usePipecatConversation();
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const connected = state === "ready" || state === "connected";
   const busy = ["authenticating", "authenticated", "connecting", "disconnecting"].includes(state);
 
   const handleServerMessage = useCallback((value: unknown) => {
     const message = unwrapServerMessage(value);
-    if (message?.type === "scheduling_turn") {
+    if (message?.type === "scheduling_greeting") {
+      const payload = message.payload as { text?: unknown } | undefined;
+      if (typeof payload?.text === "string") {
+        setMessages([{ id: "greeting", role: "assistant", text: payload.text }]);
+      }
+    } else if (message?.type === "scheduling_turn") {
+      const payload = message.payload as {
+        message_number?: unknown;
+        patient_text?: unknown;
+        assistant_message?: unknown;
+      } | undefined;
+      if (
+        typeof payload?.message_number === "number"
+        && typeof payload.patient_text === "string"
+        && typeof payload.assistant_message === "string"
+      ) {
+        const number = payload.message_number;
+        setMessages((existing) => [
+          ...existing.filter((item) => !item.id.endsWith(`-${number}`)),
+          { id: `patient-${number}`, role: "user", text: payload.patient_text as string },
+          { id: `assistant-${number}`, role: "assistant", text: payload.assistant_message as string },
+        ]);
+      }
       onSchedulingTurn(message.payload);
     } else if (message?.type === "scheduling_error") {
       setError("The scheduling engine could not safely process that turn.");
@@ -80,6 +95,7 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
   async function startCall() {
     if (!client || busy || connected) return;
     setError(null);
+    setMessages([]);
     try {
       await client.initDevices();
       await client.startBotAndConnect({
@@ -106,11 +122,7 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
   return (
     <section className="voice-call-panel" aria-labelledby="voice-call-title">
       <header className="voice-call-header">
-        <div>
-          <span className="eyebrow">PRIMARY TESTING SURFACE</span>
-          <h2 id="voice-call-title">Talk to Prosper Scheduler</h2>
-          <p>Speak naturally. Your live transcript and the agent’s answer stay on this screen.</p>
-        </div>
+        <h2 id="voice-call-title">Prosper Scheduler</h2>
         <span className={`voice-status voice-status-${state}`}><i />{connectionLabel(state)}</span>
       </header>
 
@@ -156,30 +168,25 @@ function VoiceCallContent({ endpoint, onSchedulingTurn }: VoiceCallPanelProps) {
           <div className="voice-transcript-scroll">
             {messages.length === 0 ? (
               <div className="voice-transcript-empty">
-                <span>“ ”</span>
-                <p>Your transcript and the assistant’s response will appear here.</p>
+                <p>Start a call to see the conversation.</p>
               </div>
-            ) : messages.map((message, index) => {
-              const text = message.parts.map((part) => readablePart(part.text)).join("").trim();
-              if (!text || !["user", "assistant"].includes(message.role)) return null;
-              return (
-                <article className={`voice-message voice-message-${message.role}`} key={`${message.createdAt}-${index}`}>
+            ) : messages.map((message) => (
+                <article className={`voice-message voice-message-${message.role}`} key={message.id}>
                   <span>{message.role === "user" ? "Patient" : "Assistant"}</span>
-                  <p>{text}</p>
-                  {!message.final && <small>Listening…</small>}
+                  <p>{message.text}</p>
                 </article>
-              );
-            })}
+            ))}
           </div>
         </div>
       </div>
 
       {error && <div className="voice-error" role="alert">{error}</div>}
 
-      <footer className="voice-call-controls">
-        <span>{connected ? "Live voice session" : "The call begins only after you press record."}</span>
-        {connected && <button className="voice-end" type="button" onClick={() => void endCall()}>End call</button>}
-      </footer>
+      {connected && (
+        <footer className="voice-call-controls">
+          <button className="voice-end" type="button" onClick={() => void endCall()}>End call</button>
+        </footer>
+      )}
       <PipecatClientAudio />
     </section>
   );

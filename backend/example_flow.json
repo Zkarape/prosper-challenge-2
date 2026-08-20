@@ -1,87 +1,280 @@
 {
+  "schema_version": "2.0",
   "name": "Prosper Scheduler",
+  "description": "A safe healthcare scheduling workflow that keeps conversation natural while deterministic services own eligibility, availability, and booking.",
+  "first_message": "Hi, I’m the clinic’s scheduling assistant. How can I help you today?",
   "voice_id": "21m00Tcm4TlvDq8ikWAM",
   "model": "gpt-4o",
-  "persona": "You are a warm, efficient scheduling assistant for a healthcare clinic. Your responses are spoken aloud, so avoid emojis, lists, or anything that can't be read out. Keep replies to one or two short sentences. Always use an available function to move the conversation forward.",
-  "initial_node": "greeting",
+  "persona": "You are a warm, concise healthcare scheduling assistant. Speak in one or two short sentences, ask only one necessary question at a time, and never claim an appointment is booked until the booking tool confirms it.",
+  "initial_node": "welcome",
+  "tools": [
+    {
+      "name": "observe_patient_turn",
+      "kind": "server",
+      "description": "Extract only patient-stated scheduling facts into the strict turn schema.",
+      "implementation": "extraction.OpenAIExtractor.extract",
+      "parameters": {
+        "patient_text": {"type": "string"},
+        "patient_request": {"type": "object"},
+        "pending_offer": {"type": ["object", "null"]}
+      },
+      "outcomes": ["success", "validation_failure"]
+    },
+    {
+      "name": "resolve_and_check_request",
+      "kind": "server",
+      "description": "Resolve catalog phrases, enforce clinic policy, rank valid candidates, and choose the next safe action.",
+      "implementation": "scheduling.SchedulingEngine.evaluate",
+      "parameters": {"patient_request": {"type": "object"}},
+      "outcomes": ["needs_information", "offer_options", "ready_to_book", "blocked"]
+    },
+    {
+      "name": "find_available_slots",
+      "kind": "server",
+      "description": "Return deterministic mock slots for an eligible appointment candidate.",
+      "implementation": "scheduling.MockAvailability.slots_for",
+      "parameters": {"candidate": {"type": "object"}},
+      "outcomes": ["success", "no_availability"]
+    },
+    {
+      "name": "confirm_booking",
+      "kind": "server",
+      "description": "Validate the current offer and reserve the selected slot idempotently.",
+      "implementation": "scheduling.MockBookingService.book",
+      "parameters": {
+        "offer_id": {"type": "string"},
+        "slot_id": {"type": "string"}
+      },
+      "outcomes": ["confirmed", "stale_offer", "slot_unavailable", "failure"]
+    },
+    {
+      "name": "handoff_to_staff",
+      "kind": "server",
+      "description": "Record a safe handoff when the request cannot be completed automatically.",
+      "implementation": "scheduling.ConversationService.finish_conversation",
+      "parameters": {"reason": {"type": "string"}},
+      "outcomes": ["transferred", "failure"]
+    }
+  ],
   "nodes": [
     {
-      "name": "greeting",
+      "name": "welcome",
+      "title": "Welcome & route",
+      "type": "conversation",
+      "description": "Open naturally and identify whether the caller needs scheduling, information, or staff help.",
+      "position": {"x": 60, "y": 260},
       "task_messages": [
-        {
-          "role": "developer",
-          "content": "Greet the caller, say you're the clinic's scheduling assistant, and ask whether they'd like to book, reschedule, or cancel an appointment."
-        }
+        {"role": "developer", "content": "Greet the caller as the clinic scheduling assistant and ask how you can help. Do not force the caller into a menu."}
       ],
+      "runtime_stages": [],
+      "tools": [],
       "edges": [
         {
-          "function": "choose_intent",
-          "description": "Record what the caller wants to do once they say it.",
-          "target": "collect_details",
-          "properties": {
-            "intent": {
-              "type": "string",
-              "enum": ["book", "reschedule", "cancel"],
-              "description": "What the caller wants to do."
-            }
-          },
-          "required": ["intent"]
+          "id": "welcome_schedule",
+          "type": "condition",
+          "label": "Scheduling or clinic question",
+          "condition": "The caller asks to book an appointment or asks about a provider, location, or appointment type.",
+          "function": "begin_scheduling",
+          "description": "Move into scheduling when the caller states a supported request.",
+          "target": "understand",
+          "properties": {},
+          "required": []
+        },
+        {
+          "id": "welcome_handoff",
+          "type": "condition",
+          "label": "Reschedule, cancel, or staff",
+          "condition": "The caller asks to reschedule, cancel, or speak with a person.",
+          "function": "request_staff_help",
+          "description": "Route unsupported or explicitly human requests to staff.",
+          "target": "handoff",
+          "properties": {"reason": {"type": "string", "description": "Why staff help is needed."}},
+          "required": ["reason"]
         }
       ]
     },
     {
-      "name": "collect_details",
+      "name": "understand",
+      "title": "Understand the patient",
+      "type": "subagent",
+      "description": "Capture only facts supported by the latest patient turn; never choose catalog records here.",
+      "position": {"x": 380, "y": 100},
       "task_messages": [
-        {
-          "role": "developer",
-          "content": "Collect the caller's full name and the reason for the visit. Ask for whatever is still missing, one question at a time."
-        }
+        {"role": "developer", "content": "Observe the latest patient reply. Preserve raw wording, explicit corrections, and whether provider or location language is required or preferred."}
       ],
+      "runtime_stages": ["Extract", "Default", "Apply"],
+      "tools": ["observe_patient_turn"],
       "edges": [
         {
-          "function": "record_details",
-          "description": "Record the caller's name and reason once both are known.",
-          "target": "offer_times",
-          "properties": {
-            "full_name": {"type": "string", "description": "Caller's full name."},
-            "reason": {"type": "string", "description": "Reason for the visit."}
-          },
-          "required": ["full_name", "reason"]
+          "id": "understand_checked",
+          "type": "success",
+          "label": "Validated facts",
+          "condition": "The extraction follows the schema and every changed fact is grounded in the latest utterance.",
+          "function": "apply_patient_observations",
+          "description": "Apply the validated state patch and continue.",
+          "target": "check",
+          "properties": {},
+          "required": []
+        },
+        {
+          "id": "understand_failed",
+          "type": "failure",
+          "label": "Cannot safely understand",
+          "condition": "Extraction remains invalid after the single bounded retry.",
+          "function": "handle_extraction_failure",
+          "description": "Move to a safe handoff instead of guessing.",
+          "target": "handoff",
+          "properties": {},
+          "required": []
         }
       ]
     },
     {
-      "name": "offer_times",
+      "name": "check",
+      "title": "Check appointments",
+      "type": "tool",
+      "description": "Resolve the catalog, enforce every policy, rank candidates, and query availability only when eligible.",
+      "position": {"x": 700, "y": 100},
       "task_messages": [
-        {
-          "role": "developer",
-          "content": "Offer exactly two options: Tuesday at 10 AM, or Thursday at 2 PM. Ask which one works for them."
-        }
+        {"role": "developer", "content": "Run deterministic scheduling checks. Do not relax a required patient constraint without permission."}
       ],
+      "runtime_stages": ["Resolve", "Rules", "Validate"],
+      "tools": ["resolve_and_check_request", "find_available_slots"],
       "edges": [
         {
-          "function": "select_time",
-          "description": "Record the slot the caller picks.",
-          "target": "confirm",
-          "properties": {
-            "slot": {
-              "type": "string",
-              "enum": ["Tuesday 10 AM", "Thursday 2 PM"],
-              "description": "The chosen appointment slot."
-            }
-          },
-          "required": ["slot"]
+          "id": "check_respond",
+          "type": "success",
+          "label": "Question or safe offer",
+          "condition": "The engine has selected a grounded question, clarification, alternative, or slot offer.",
+          "function": "present_checked_action",
+          "description": "Let the assistant speak only the checked next action.",
+          "target": "respond",
+          "properties": {},
+          "required": []
+        },
+        {
+          "id": "check_book",
+          "type": "condition",
+          "label": "Patient confirmed",
+          "condition": "The patient accepted the exact current confirmation offer and its fingerprints are current.",
+          "function": "commit_confirmed_slot",
+          "description": "Attempt an idempotent booking only after explicit confirmation.",
+          "target": "book",
+          "properties": {},
+          "required": []
+        },
+        {
+          "id": "check_handoff",
+          "type": "failure",
+          "label": "Cannot complete safely",
+          "condition": "The request is unsupported, repeatedly unclear, or requires staff intervention.",
+          "function": "escalate_scheduling_request",
+          "description": "Route to staff with a concise reason.",
+          "target": "handoff",
+          "properties": {},
+          "required": []
         }
       ]
     },
     {
-      "name": "confirm",
+      "name": "respond",
+      "title": "Ask or offer",
+      "type": "conversation",
+      "description": "Speak one checked question or offer, then listen for the patient's next turn.",
+      "position": {"x": 1020, "y": 100},
       "task_messages": [
-        {
-          "role": "developer",
-          "content": "Confirm the appointment back to the caller, including their name and the chosen time, thank them, and say goodbye."
-        }
+        {"role": "developer", "content": "Say only the server-authored response. Keep it brief and do not add providers, policies, times, or booking claims."}
       ],
+      "runtime_stages": ["Decision"],
+      "tools": [],
+      "edges": [
+        {
+          "id": "respond_continue",
+          "type": "default",
+          "label": "Patient replies",
+          "condition": "",
+          "function": "continue_scheduling",
+          "description": "Process the next patient reply against the active server-owned offer.",
+          "target": "understand",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+    {
+      "name": "book",
+      "title": "Book confirmed slot",
+      "type": "tool",
+      "description": "Reserve the selected slot and require a confirmed status plus matching booking and offer IDs.",
+      "position": {"x": 700, "y": 430},
+      "task_messages": [
+        {"role": "developer", "content": "Execute the server booking tool exactly once for the confirmed offer."}
+      ],
+      "runtime_stages": ["Book"],
+      "tools": ["confirm_booking"],
+      "edges": [
+        {
+          "id": "book_complete",
+          "type": "success",
+          "label": "Booking confirmed",
+          "condition": "The booking service returned confirmed with matching booking_id and offer_id.",
+          "function": "announce_confirmation",
+          "description": "Close the call with the authoritative appointment details.",
+          "target": "complete",
+          "properties": {},
+          "required": []
+        },
+        {
+          "id": "book_retry",
+          "type": "failure",
+          "label": "Slot changed",
+          "condition": "The offer is stale or the slot is no longer available.",
+          "function": "recover_booking_failure",
+          "description": "Return to a checked response with replacement options.",
+          "target": "respond",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+    {
+      "name": "handoff",
+      "title": "Handoff to staff",
+      "type": "handoff",
+      "description": "Explain the boundary clearly and record a safe staff handoff.",
+      "position": {"x": 1020, "y": 430},
+      "task_messages": [
+        {"role": "developer", "content": "Tell the caller briefly why clinic staff need to help and what will happen next."}
+      ],
+      "runtime_stages": ["Decision"],
+      "tools": ["handoff_to_staff"],
+      "edges": [
+        {
+          "id": "handoff_complete",
+          "type": "success",
+          "label": "Handoff recorded",
+          "condition": "The staff handoff was recorded.",
+          "function": "finish_handoff",
+          "description": "End the automated portion of the call.",
+          "target": "complete",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+    {
+      "name": "complete",
+      "title": "Complete call",
+      "type": "end",
+      "description": "Thank the caller and end only after a confirmed booking or recorded handoff.",
+      "position": {"x": 1020, "y": 650},
+      "task_messages": [
+        {"role": "developer", "content": "Thank the caller, summarize only the confirmed outcome, and say goodbye."}
+      ],
+      "runtime_stages": [],
+      "tools": [],
+      "edges": [],
+      "post_actions": [{"type": "end_conversation"}],
       "end": true
     }
   ]

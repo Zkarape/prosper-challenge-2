@@ -11,6 +11,7 @@ from uuid import uuid4
 class OfferKind(str, Enum):
     ALTERNATIVE_LOCATION = "ALTERNATIVE_LOCATION"
     FIELD_OPTIONS = "FIELD_OPTIONS"
+    RECOVERY_OPTIONS = "RECOVERY_OPTIONS"
     SLOT_OPTIONS = "SLOT_OPTIONS"
     CONFIRM_BOOKING = "CONFIRM_BOOKING"
 
@@ -33,6 +34,25 @@ class PendingOffer:
     options: list[OfferOption]
     offer_id: str = field(default_factory=lambda: f"offer_{uuid4().hex[:12]}")
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "PendingOffer":
+        """Restore a full server-owned offer from durable storage."""
+
+        return cls(
+            offer_id=value["offer_id"],
+            kind=OfferKind(value["kind"]),
+            request_fingerprint=value["request_fingerprint"],
+            catalog_version=value["catalog_version"],
+            options=[
+                OfferOption(
+                    option_id=item["option_id"],
+                    label=item["label"],
+                    value=item["value"],
+                )
+                for item in value.get("options", [])
+            ],
+        )
+
     def to_dict(self, *, include_values: bool = True) -> dict[str, Any]:
         options = []
         for option in self.options:
@@ -43,6 +63,7 @@ class PendingOffer:
         return {
             "offer_id": self.offer_id,
             "kind": self.kind.value,
+            "request_fingerprint": self.request_fingerprint,
             "catalog_version": self.catalog_version,
             "options": options,
         }

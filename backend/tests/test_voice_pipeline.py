@@ -9,7 +9,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from bot import GREETING, SchedulingTurnProcessor, build_pipeline
-from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame
+from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
@@ -31,7 +31,9 @@ class VoicePipelineTests(unittest.TestCase):
             name: FrameProcessor(name=name)
             for name in (
                 "transport_input",
+                "vad",
                 "stt",
+                "turn_detector",
                 "scheduler",
                 "tts",
                 "transport_output",
@@ -41,7 +43,9 @@ class VoicePipelineTests(unittest.TestCase):
             transport=FakeTransport(
                 processors["transport_input"], processors["transport_output"]
             ),
+            vad=processors["vad"],
             stt=processors["stt"],
+            turn_detector=processors["turn_detector"],
             scheduler=processors["scheduler"],
             tts=processors["tts"],
         )
@@ -50,7 +54,9 @@ class VoicePipelineTests(unittest.TestCase):
             [processor.name for processor in pipeline.processors[1:-1]],
             [
                 "transport_input",
+                "vad",
                 "stt",
+                "turn_detector",
                 "scheduler",
                 "tts",
                 "transport_output",
@@ -65,7 +71,7 @@ class VoicePipelineTests(unittest.TestCase):
 
 
 class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_committed_turn_is_published_for_live_diagnostics(self):
+    async def test_segments_are_combined_before_publishing_one_patient_turn(self):
         result = {
             "assistant_message": "Are you a new or existing patient?",
             "engine_result": {"next_action": {"type": "ASK_REQUIRED_FIELD"}},
@@ -93,18 +99,43 @@ class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
 
         await processor.process_frame(
             TranscriptionFrame(
-                text="I need a knee MRI",
+                text="I want",
                 user_id="patient",
                 timestamp="2026-08-19T00:00:00Z",
-                finalized=True,
+                finalized=False,
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            TranscriptionFrame(
+                text="to book a knee MRI",
+                user_id="patient",
+                timestamp="2026-08-19T00:00:01Z",
+                finalized=False,
             ),
             FrameDirection.DOWNSTREAM,
         )
 
-        self.assertEqual(service.call, ("conversation_test", "I need a knee MRI"))
+        self.assertFalse(hasattr(service, "call"))
+
+        await processor.process_frame(
+            UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+
+        self.assertEqual(
+            service.call, ("conversation_test", "I want to book a knee MRI")
+        )
         self.assertEqual(rtvi.messages[0]["type"], "scheduling_turn")
+        self.assertEqual(
+            rtvi.messages[0]["payload"]["patient_text"],
+            "I want to book a knee MRI",
+        )
         self.assertEqual(rtvi.messages[0]["payload"]["usage"]["input_tokens"], 120)
-        spoken = processor.push_frame.await_args.args[0]
+        spoken = next(
+            call.args[0]
+            for call in processor.push_frame.await_args_list
+            if isinstance(call.args[0], TTSSpeakFrame)
+        )
         self.assertIsInstance(spoken, TTSSpeakFrame)
         self.assertEqual(spoken.text, result["assistant_message"])
 

@@ -3,7 +3,7 @@
 VENV := backend/.venv
 PYTHON := $(VENV)/bin/python
 
-.PHONY: help install run api frontend test-backend clean
+.PHONY: help install run api frontend db-up db-migrate db-status test-backend clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -22,6 +22,15 @@ api: ## Run the local text scheduling API on http://localhost:8000
 
 frontend: ## Run the Agent Studio frontend
 	cd frontend && npm run dev
+
+db-up: ## Start local PostgreSQL in Docker
+	docker compose up -d postgres
+
+db-migrate: ## Apply PostgreSQL migrations using backend/.env
+	$(PYTHON) backend/manage_db.py migrate
+
+db-status: ## Verify PostgreSQL connectivity and schema
+	$(PYTHON) backend/manage_db.py status
 
 test-backend: ## Run deterministic scheduling and conversation tests
 	$(PYTHON) -m unittest discover -s backend/tests -v

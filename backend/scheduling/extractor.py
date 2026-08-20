@@ -111,7 +111,7 @@ class RuleBasedExtractor:
             "appointment_type",
             self.APPOINTMENT_ALIASES,
             self.catalog.appointment_types.values(),
-            default_requirement="REQUIRED",
+            default_requirement="UNSPECIFIED",
         )
         self._extract_entity(
             wire,
@@ -250,6 +250,20 @@ class RuleBasedExtractor:
             "three": 3,
         }
         if pending_offer:
+            if pending_offer.get("kind") == "RECOVERY_OPTIONS":
+                recovery_patterns = (
+                    (1, r"\b(different|another|other|change|new patient appointment)\b"),
+                    (2, r"\b(staff|person|human|clinic help|help with)\b"),
+                )
+                for ordinal, pattern in recovery_patterns:
+                    match = re.search(pattern, patient_text, re.I)
+                    if match:
+                        return {
+                            "value": "SELECT",
+                            "raw_selection_text": match.group(0),
+                            "ordinal": ordinal,
+                            "evidence": match.group(0),
+                        }
             for token, ordinal in ordinal_words.items():
                 match = re.search(rf"\b{re.escape(token)}\b", patient_text, re.I)
                 if match:

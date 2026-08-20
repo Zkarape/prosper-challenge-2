@@ -21,9 +21,17 @@ from typing import Any
 from dotenv import load_dotenv
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    Frame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
@@ -33,10 +41,12 @@ from pipecat.services.elevenlabs.stt import (
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.workers.runner import WorkerRunner
 
-from scheduling import ConversationService
+from scheduling import ConversationService, shared_conversation_service
 from scheduling.service import GREETING
+from agent_builder import AgentConfigRepository
 
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -59,7 +69,7 @@ def _required_environment(name: str) -> str:
 
 
 class SchedulingTurnProcessor(FrameProcessor):
-    """Run each committed patient transcript through the checked turn service."""
+    """Run one semantically complete patient turn through the checked service."""
 
     def __init__(
         self,
@@ -71,18 +81,28 @@ class SchedulingTurnProcessor(FrameProcessor):
         self.service = service
         self.conversation_id = conversation_id
         self.rtvi = None
+        self._transcript_segments: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if not isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, TranscriptionFrame):
+            patient_text = frame.text.strip()
+            if patient_text:
+                self._transcript_segments.append(patient_text)
+                logger.info("Buffered patient speech segment: {}", patient_text)
             await self.push_frame(frame, direction)
             return
 
-        patient_text = frame.text.strip()
+        await self.push_frame(frame, direction)
+        if not isinstance(frame, UserStoppedSpeakingFrame):
+            return
+
+        patient_text = " ".join(self._transcript_segments).strip()
+        self._transcript_segments.clear()
         if not patient_text:
             return
 
-        logger.info("Processing committed patient turn: {}", patient_text)
+        logger.info("Processing complete patient turn: {}", patient_text)
         try:
             result = await asyncio.to_thread(
                 self.service.process_turn,
@@ -97,11 +117,22 @@ class SchedulingTurnProcessor(FrameProcessor):
             )
             if self.rtvi is not None:
                 await self.rtvi.send_server_message(
-                    {"type": "scheduling_turn", "payload": result}
+                    {
+                        "type": "scheduling_turn",
+                        "payload": {**result, "patient_text": patient_text},
+                    }
                 )
             await self.push_frame(TTSSpeakFrame(text=result["assistant_message"]))
         except Exception as exc:
             logger.exception("Scheduling voice turn failed")
+            try:
+                await asyncio.to_thread(
+                    self.service.finish_conversation,
+                    self.conversation_id,
+                    forced_outcome="SYSTEM_ERROR",
+                )
+            except Exception:
+                logger.exception("Could not record failed conversation outcome")
             if self.rtvi is not None:
                 await self.rtvi.send_server_message(
                     {
@@ -122,7 +153,9 @@ class SchedulingTurnProcessor(FrameProcessor):
 def build_pipeline(
     *,
     transport: BaseTransport,
+    vad: FrameProcessor,
     stt: Any,
+    turn_detector: FrameProcessor,
     scheduler: FrameProcessor,
     tts: Any,
 ) -> Pipeline:
@@ -131,7 +164,9 @@ def build_pipeline(
     return Pipeline(
         [
             transport.input(),
+            vad,
             stt,
+            turn_detector,
             scheduler,
             tts,
             transport.output(),
@@ -145,7 +180,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     elevenlabs_key = _required_environment("ELEVENLABS_API_KEY")
     _required_environment("OPENAI_API_KEY")
 
-    service = ConversationService.default()
+    service = shared_conversation_service()
+    agent_config = AgentConfigRepository(
+        Path(__file__).parent / "example_flow.json"
+    ).load()
+    greeting = agent_config.first_message
     created = service.create_conversation()
     logger.info("Starting observable scheduler with {}", service.extractor_mode)
 
@@ -158,16 +197,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             min_silence_duration_ms=350,
         ),
     )
+    vad = VADProcessor(
+        vad_analyzer=SileroVADAnalyzer(
+            params=VADParams(start_secs=0.15, stop_secs=0.35)
+        )
+    )
+    turn_detector = UserTurnProcessor(user_turn_stop_timeout=8.0)
     scheduler = SchedulingTurnProcessor(service, created["conversation_id"])
     tts = ElevenLabsTTSService(
         api_key=elevenlabs_key,
         settings=ElevenLabsTTSService.Settings(
-            voice=os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
+            voice=os.getenv("ELEVENLABS_VOICE_ID", agent_config.voice_id)
         ),
     )
     pipeline = build_pipeline(
         transport=transport,
+        vad=vad,
         stt=stt,
+        turn_detector=turn_detector,
         scheduler=scheduler,
         tts=tts,
     )
@@ -181,11 +228,26 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
         logger.info("Embedded voice client ready")
-        await worker.queue_frames([TTSSpeakFrame(text=GREETING)])
+        await rtvi.send_server_message(
+            {"type": "scheduling_greeting", "payload": {"text": greeting}}
+        )
+        await worker.queue_frames([TTSSpeakFrame(text=greeting)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Voice client disconnected")
+        try:
+            evaluation = await asyncio.to_thread(
+                service.finish_conversation, created["conversation_id"]
+            )
+            logger.info(
+                "Conversation outcome={} safe={} total_tokens={}",
+                evaluation["outcome"],
+                evaluation["safe"],
+                evaluation["total_tokens"],
+            )
+        except Exception:
+            logger.exception("Could not finalize conversation evaluation")
         await worker.cancel()
 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
