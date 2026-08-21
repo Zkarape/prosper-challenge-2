@@ -62,6 +62,9 @@ type ComparisonRun = {
     accuracy_delta_percentage_points: number;
     same_accuracy: boolean;
     both_strategies_passed_every_scenario: boolean;
+    paired_difference_p_value: number;
+    selected_only_passed_trial_count: number;
+    baseline_only_passed_trial_count: number;
   } | null;
   error?: string | null;
 };
@@ -82,7 +85,9 @@ function conclusionText(value: string | undefined) {
   if (value === "SUPPORTED_WITHIN_BENCHMARK") return "Supported within this benchmark";
   if (value === "TRADEOFF_REQUIRES_REVIEW") return "Recent context lost accuracy";
   if (value === "NOT_SUPPORTED_TOKEN_SAVINGS") return "No token saving measured";
-  if (value === "INCONCLUSIVE_ACCURACY") return "Accuracy evidence is inconclusive";
+  if (value === "SUPPORTED_RELATIVE_NOT_RELEASE_READY") return "Relative advantage supported; accuracy still needs work";
+  if (value === "PROMISING_NOT_CONCLUSIVE") return "Promising, but too little evidence";
+  if (value === "INCONCLUSIVE_ACCURACY") return "Token saving measured; accuracy is inconclusive";
   return "Run the comparison to see the result";
 }
 
@@ -217,22 +222,30 @@ export function ContextComparisonPanel({ apiUrl }: { apiUrl: string }) {
               <div><dt>Tokens avoided</dt><dd>{number(comparison.input_tokens_saved)}</dd></div>
               <div><dt>Accuracy change</dt><dd>{comparison.accuracy_delta_percentage_points > 0 ? "+" : ""}{number(comparison.accuracy_delta_percentage_points, 1)} pp</dd></div>
               <div><dt>Estimated cost avoided</dt><dd>{comparison.estimated_cost_saved_usd == null ? "—" : `$${number(comparison.estimated_cost_saved_usd, 5)}`}</dd></div>
+              <div><dt>Paired p-value</dt><dd>{number(comparison.paired_difference_p_value, 3)}</dd></div>
             </dl>
           )}
         </div>
       </div>
 
       {compact && bounded && full && (
-        <div className="context-scenario-table" role="table" aria-label="Context comparison scenarios">
-          <div role="row"><strong role="columnheader">Conversation</strong><strong role="columnheader">State only</strong><strong role="columnheader">Recent</strong><strong role="columnheader">Full</strong></div>
-          {scenarioRows(compact, bounded, full).map((scenario) => (
-            <div role="row" key={scenario.scenarioId}>
-              <span role="cell">{scenario.title}</span>
-              <b className={scenario.compact.passed === scenario.compact.total ? "pass" : "fail"} role="cell">{scenario.compact.passed}/{scenario.compact.total}</b>
-              <b className={scenario.bounded.passed === scenario.bounded.total ? "pass" : "fail"} role="cell">{scenario.bounded.passed}/{scenario.bounded.total}</b>
-              <b className={scenario.full.passed === scenario.full.total ? "pass" : "fail"} role="cell">{scenario.full.passed}/{scenario.full.total}</b>
-            </div>
-          ))}
+        <div className="context-scenario-table-wrap">
+          <table className="context-scenario-table">
+            <caption className="sr-only">Context comparison scenarios</caption>
+            <thead>
+              <tr><th scope="col">Conversation</th><th scope="col">State only</th><th scope="col">Recent</th><th scope="col">Full</th></tr>
+            </thead>
+            <tbody>
+              {scenarioRows(compact, bounded, full).map((scenario) => (
+                <tr key={scenario.scenarioId}>
+                  <td>{scenario.title}</td>
+                  <td><b className={scenario.compact.passed === scenario.compact.total ? "pass" : "fail"}>{scenario.compact.passed}/{scenario.compact.total}</b></td>
+                  <td><b className={scenario.bounded.passed === scenario.bounded.total ? "pass" : "fail"}>{scenario.bounded.passed}/{scenario.bounded.total}</b></td>
+                  <td><b className={scenario.full.passed === scenario.full.total ? "pass" : "fail"}>{scenario.full.passed}/{scenario.full.total}</b></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

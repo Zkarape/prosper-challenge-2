@@ -28,6 +28,7 @@ html, body { min-height: 100%; margin: 0; background: #08090f; color: var(--ink)
 body { font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif; background-image: radial-gradient(circle at 82% 8%, rgba(99,72,255,.12), transparent 27%), radial-gradient(circle at 62% 100%, rgba(226,93,204,.08), transparent 31%); }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 ::selection { background: var(--pink); color: white; }
 
 .app-shell { min-height: 100vh; display: flex; }
@@ -324,13 +325,14 @@ button { color: inherit; }
 .context-proof-result > div:last-child { min-width: 0; }
 .context-proof-result b { display: inline-flex; padding: 6px 8px; border-radius: 6px; background: #28212e; color: #d49dc9; font-size: 8px; }
 .context-proof-result b.supported { background: #242043; color: #b5acff; }
-.context-proof-result dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; margin: 9px 0 0; }
+.context-proof-result dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; width: 100%; margin: 9px 0 0; }
 .context-proof-result dl div { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); font-size: 7px; }
 .context-proof-result dt { color: var(--muted); }
 .context-proof-result dd { margin: 0; color: var(--ink); font-weight: 750; }
-.context-scenario-table { border-top: 1px solid var(--line); }
-.context-scenario-table > div { display: grid; grid-template-columns: minmax(0, 1fr) 90px 90px 90px; align-items: center; min-height: 36px; padding: 0 20px; border-bottom: 1px solid var(--line); font-size: 8px; }
-.context-scenario-table > div:first-child { background: #0d0e15; color: var(--muted); }
+.context-scenario-table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--line); font-size: 8px; }
+.context-scenario-table th, .context-scenario-table td { height: 36px; padding: 0 20px; border-bottom: 1px solid var(--line); text-align: left; }
+.context-scenario-table th:not(:first-child), .context-scenario-table td:not(:first-child) { width: 90px; }
+.context-scenario-table thead { background: #0d0e15; color: var(--muted); }
 .context-scenario-table b { font-size: 8px; }
 .context-scenario-table b.pass { color: #a99fff; }
 .context-scenario-table b.fail { color: #f280d3; }
@@ -1177,7 +1179,7 @@ html[data-theme="light"] .stage-result { background: white; }
 html[data-theme="light"] .context-proof { background: white; }
 html[data-theme="light"] .context-proof-method,
 html[data-theme="light"] .context-proof > footer,
-html[data-theme="light"] .context-scenario-table > div:first-child { background: #f5f2fa; }
+html[data-theme="light"] .context-scenario-table thead { background: #f5f2fa; }
 html[data-theme="light"] .context-proof-method span { background: #ece8f3; color: #665f7d; }
 html[data-theme="light"] .context-strategy-card dl div { background: #f8f6fb; }
 html[data-theme="light"] .context-strategy-card dd,
@@ -1239,8 +1241,8 @@ html[data-theme="light"] .implementation-truth p { color: #5f566c; }
   .context-strategy-card:last-child { border-bottom: 0; }
   .context-proof-result { grid-template-columns: 1fr; }
   .context-proof-result dl { grid-template-columns: 1fr; }
-  .context-scenario-table { overflow-x: auto; }
-  .context-scenario-table > div { min-width: 580px; }
+  .context-scenario-table-wrap { overflow-x: auto; }
+  .context-scenario-table { min-width: 580px; }
   .system-logs-header { align-items: flex-start; flex-direction: column; }
   .logs-toolbar { grid-template-columns: 1fr 1fr; }
   .logs-toolbar label:first-child { grid-column: 1 / -1; }

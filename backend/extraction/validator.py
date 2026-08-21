@@ -55,6 +55,16 @@ class ExtractionValidator:
             change = getattr(extraction, field_name)
             self._validate_change(change, field_name, transcript_normalized, "value")
             if change.operation != PatchOperation.KEEP:
+                if not self._status_change_is_grounded(
+                    field_name,
+                    change.value.value if change.value is not None else None,
+                    change.operation,
+                    transcript,
+                ):
+                    # A model can attach an unrelated exact quote to a status
+                    # patch. Isolate that bad field instead of discarding other
+                    # valid observations from the same patient turn.
+                    continue
                 if change.operation == PatchOperation.CLEAR:
                     value = "UNKNOWN"
                 else:
@@ -71,8 +81,15 @@ class ExtractionValidator:
 
         for field_name in ("appointment_type", "provider", "location"):
             change = getattr(extraction, field_name)
-            self._validate_change(change, field_name, transcript_normalized, "raw_text")
             current_entity = getattr(patient_request, field_name)
+            if (
+                field_name in {"provider", "location"}
+                and self._explicitly_removes_restriction(field_name, transcript)
+            ):
+                if current_entity is not None:
+                    patch[field_name] = {"operation": "CLEAR"}
+                continue
+            self._validate_change(change, field_name, transcript_normalized, "raw_text")
             if (
                 change.operation == PatchOperation.SET
                 and current_entity is not None
@@ -195,6 +212,72 @@ class ExtractionValidator:
                 else None
             ),
             unclear_references=unclear,
+        )
+
+    @staticmethod
+    def _status_change_is_grounded(
+        field_name: str,
+        value: str | None,
+        operation: PatchOperation,
+        transcript: str,
+    ) -> bool:
+        normalized = _normalize(transcript)
+        uncertain = bool(
+            re.search(r"\b(?:do not know|don t know|not sure|unsure|unknown)\b", normalized)
+        )
+        if operation == PatchOperation.CLEAR or value == "UNKNOWN":
+            return uncertain
+        if field_name == "patient_status":
+            new = bool(
+                re.search(
+                    r"\b(?:new patient|first visit|first time patient|never been|i am new)\b",
+                    normalized,
+                )
+            )
+            existing = bool(
+                re.search(
+                    r"\b(?:existing patient|returning patient|current patient|"
+                    r"established patient|seen .{0,30} before)\b",
+                    normalized,
+                )
+            )
+            if value == "NEW":
+                return new
+            if value == "EXISTING":
+                return existing
+            return value == "CONFLICTING" and new and existing
+        referral_on_file = bool(
+            re.search(
+                r"\b(?:referral .{0,20}(?:on file|sent|received)|have a referral)\b",
+                normalized,
+            )
+        )
+        referral_missing = bool(
+            re.search(
+                r"\b(?:no referral|do not have a referral|without a referral|"
+                r"referral .{0,20}(?:not on file|not received|missing))\b",
+                normalized,
+            )
+            or (
+                "referral" in normalized
+                and re.search(r"\b(?:not|never) received\b", normalized)
+            )
+        )
+        if value == "ON_FILE":
+            return referral_on_file
+        if value == "NOT_ON_FILE":
+            return referral_missing
+        return value == "CONFLICTING" and referral_on_file and referral_missing
+
+    @staticmethod
+    def _explicitly_removes_restriction(field_name: str, transcript: str) -> bool:
+        normalized = _normalize(transcript)
+        noun = "(?:doctor|provider)" if field_name == "provider" else "(?:location|clinic)"
+        return bool(
+            re.search(rf"\bany {noun}\b", normalized)
+            or re.search(rf"\b{noun} (?:does not|doesn t) matter\b", normalized)
+            or re.search(rf"\bno {noun} preference\b", normalized)
+            or (field_name == "provider" and re.search(r"\bwhoever is (?:fine|available|right)\b", normalized))
         )
 
     @staticmethod

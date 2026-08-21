@@ -49,6 +49,39 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(SemanticValidationError, "not grounded"):
             self.validate(wire, "Richmond")
 
+    def test_unrelated_words_cannot_clear_patient_status(self):
+        self.request = SchedulingRequest.from_dict(
+            {"conversation_id": "conv_test", "patient_status": "EXISTING"}
+        )
+        wire = keep_extraction()
+        wire["patient_status"] = {
+            "operation": "CLEAR",
+            "value": None,
+            "evidence": "any doctor is fine",
+        }
+        validated = self.validate(wire, "Actually, any doctor is fine.")
+        self.assertNotIn("patient_status", validated.patch)
+
+    def test_any_provider_is_a_deterministic_clear(self):
+        self.request = SchedulingRequest.from_dict(
+            {
+                "conversation_id": "conv_test",
+                "provider": {
+                    "raw_text": "Dr. Hannah Nguyen",
+                    "requirement": "PREFERRED",
+                }
+            }
+        )
+        wire = keep_extraction()
+        wire["provider"] = {
+            "operation": "REPLACE",
+            "raw_text": "any doctor",
+            "requirement": "UNSPECIFIED",
+            "evidence": "any doctor",
+        }
+        validated = self.validate(wire, "Actually, any doctor is fine.")
+        self.assertEqual(validated.patch["provider"], {"operation": "CLEAR"})
+
     def test_select_requires_a_pending_offer(self):
         wire = keep_extraction()
         wire["pending_answer"] = {

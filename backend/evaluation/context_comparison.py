@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -207,6 +208,9 @@ class ContextComparisonRunner:
             "passed_scenarios": passed,
             "failed_scenarios": len(results) - passed,
             "accuracy_percent": _percentage(passed, len(results)),
+            "accuracy_confidence_95_percent": _wilson_interval(
+                passed, len(results)
+            ),
             "patient_turn_count": len(all_turns),
             "model_call_count": sum(
                 item["usage"]["model_call_count"] for item in results
@@ -414,18 +418,44 @@ class ContextComparisonRunner:
         accuracy_delta = round(
             bounded["accuracy_percent"] - full["accuracy_percent"], 2
         )
-        both_perfect = (
-            bounded["accuracy_percent"] == 100
-            and full["accuracy_percent"] == 100
+        bounded_by_trial = {
+            (item["scenario_id"], item["trial"]): item["status"] == "PASS"
+            for item in bounded["scenarios"]
+        }
+        full_by_trial = {
+            (item["scenario_id"], item["trial"]): item["status"] == "PASS"
+            for item in full["scenarios"]
+        }
+        paired_keys = sorted(set(bounded_by_trial) & set(full_by_trial))
+        selected_only_passed = sum(
+            bounded_by_trial[key] and not full_by_trial[key] for key in paired_keys
         )
+        baseline_only_passed = sum(
+            full_by_trial[key] and not bounded_by_trial[key] for key in paired_keys
+        )
+        both_passed = sum(
+            bounded_by_trial[key] and full_by_trial[key] for key in paired_keys
+        )
+        both_failed = sum(
+            not bounded_by_trial[key] and not full_by_trial[key] for key in paired_keys
+        )
+        paired_p_value = _exact_paired_p_value(
+            selected_only_passed, baseline_only_passed
+        )
+        selected_perfect = bounded["accuracy_percent"] == 100
+        both_perfect = selected_perfect and full["accuracy_percent"] == 100
         if input_saved <= 0:
             conclusion = "NOT_SUPPORTED_TOKEN_SAVINGS"
         elif bounded["accuracy_percent"] < full["accuracy_percent"]:
             conclusion = "TRADEOFF_REQUIRES_REVIEW"
         elif both_perfect:
             conclusion = "SUPPORTED_WITHIN_BENCHMARK"
-        else:
+        elif bounded["accuracy_percent"] == full["accuracy_percent"]:
             conclusion = "INCONCLUSIVE_ACCURACY"
+        elif paired_p_value <= 0.05:
+            conclusion = "SUPPORTED_RELATIVE_NOT_RELEASE_READY"
+        else:
+            conclusion = "PROMISING_NOT_CONCLUSIVE"
         bounded_cost = bounded.get("estimated_cost_usd")
         full_cost = full.get("estimated_cost_usd")
         return {
@@ -444,6 +474,13 @@ class ContextComparisonRunner:
             "accuracy_delta_percentage_points": accuracy_delta,
             "same_accuracy": bounded["accuracy_percent"] == full["accuracy_percent"],
             "both_strategies_passed_every_scenario": both_perfect,
+            "selected_strategy_passed_every_scenario": selected_perfect,
+            "paired_trial_count": len(paired_keys),
+            "both_passed_trial_count": both_passed,
+            "both_failed_trial_count": both_failed,
+            "selected_only_passed_trial_count": selected_only_passed,
+            "baseline_only_passed_trial_count": baseline_only_passed,
+            "paired_difference_p_value": paired_p_value,
             "compact_accuracy_percent": compact["accuracy_percent"],
             "bounded_recent_accuracy_percent": bounded["accuracy_percent"],
             "full_history_accuracy_percent": full["accuracy_percent"],
@@ -487,3 +524,39 @@ def _percentage(numerator: float, denominator: float) -> float:
 
 def _average(values: list[int]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _wilson_interval(successes: int, trials: int) -> list[float]:
+    """95% Wilson score interval, returned as percentages."""
+
+    if not trials:
+        return [0.0, 0.0]
+    z = 1.959963984540054
+    proportion = successes / trials
+    denominator = 1 + (z * z / trials)
+    center = (proportion + z * z / (2 * trials)) / denominator
+    margin = (
+        z
+        * math.sqrt(
+            proportion * (1 - proportion) / trials
+            + z * z / (4 * trials * trials)
+        )
+        / denominator
+    )
+    return [
+        round(max(0.0, center - margin) * 100, 2),
+        round(min(1.0, center + margin) * 100, 2),
+    ]
+
+
+def _exact_paired_p_value(selected_only: int, baseline_only: int) -> float:
+    """Two-sided exact McNemar/binomial p-value for paired pass/fail results."""
+
+    discordant = selected_only + baseline_only
+    if not discordant:
+        return 1.0
+    smaller = min(selected_only, baseline_only)
+    probability = 2 * sum(
+        math.comb(discordant, index) for index in range(smaller + 1)
+    ) / (2**discordant)
+    return round(min(1.0, probability), 6)
