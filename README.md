@@ -70,6 +70,21 @@ The text API remains available at `http://127.0.0.1:8000` for automated tests an
 
 `EXTRACTOR_MODE=auto` uses OpenAI Structured Outputs when `OPENAI_API_KEY` is available and the local structured fallback otherwise. The default extraction model is configured by `EXTRACTION_MODEL`.
 
+## Large-catalog retrieval demo
+
+Open **Catalog retrieval** in the UI to upload a catalog JSON file and search it.
+The app validates the catalog, builds a small in-memory lexical index, and shows
+the matching candidates plus retrieval time. This keeps the request sent to the
+LLM small: retrieval suggests records, while the deterministic scheduler still
+checks relationships, policy, availability, and booking safety.
+
+The demo upload is process-local, so it resets when the API restarts. A production
+version should store catalog versions in PostgreSQL/object storage and pin each
+conversation to one version.
+
+The same operations are available through `POST /api/catalog/upload` and
+`POST /api/catalog/search`.
+
 ## Layout
 
 | Path | Responsibility |

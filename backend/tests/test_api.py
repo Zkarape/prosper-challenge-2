@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import sys
 import time
@@ -133,6 +134,25 @@ class SchedulingApiTests(unittest.TestCase):
         self.assertEqual(payload["defined_case_count"], 40)
         self.assertEqual(payload["manual_authored_case_count"], 2)
         self.assertEqual(payload["cases"][0]["test_case_id"], "case_001")
+
+    def test_catalog_upload_builds_retrieval_index(self):
+        catalog_path = BACKEND / "data" / "catalog.json"
+        catalog = json.loads(catalog_path.read_text())
+        status = self.client.get("/api/catalog")
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["locations"], 8)
+
+        uploaded = self.client.post("/api/catalog/upload", json={"catalog": catalog})
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertEqual(uploaded.json()["retrieval"], "lexical_index_ready")
+
+        search = self.client.post(
+            "/api/catalog/search",
+            json={"entity_type": "appointment_type", "query": "knee MRI"},
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertGreaterEqual(search.json()["candidate_count"], 1)
+        self.assertIn("latency_ms", search.json())
 
     def test_context_strategy_comparison_requires_real_model_usage(self):
         dataset = self.client.get("/api/evaluations/context-comparison/dataset")

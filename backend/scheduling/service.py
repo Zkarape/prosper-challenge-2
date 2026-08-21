@@ -115,6 +115,30 @@ class ConversationService:
     def storage_mode(self) -> str:
         return "postgresql" if self.store.durable else "memory"
 
+    def replace_catalog(self, catalog: Catalog) -> None:
+        """Activate a validated catalog for new scheduling work.
+
+        Offers already created under the previous catalog retain their old hash;
+        booking validation will reject them if a patient tries to confirm after
+        activation. Production deployments should pin each conversation to a
+        catalog snapshot; this method is intended for the local catalog lab.
+        """
+
+        self.catalog = catalog
+        self.engine = SchedulingEngine(catalog)
+        self.validator = ExtractionValidator(catalog)
+        if isinstance(self.extractor, RuleBasedExtractor):
+            self.extractor = RuleBasedExtractor(catalog)
+        if hasattr(self.availability, "catalog"):
+            self.availability.catalog = catalog
+        if hasattr(self.store, "catalog"):
+            self.store.catalog = catalog
+        if self.store.durable:
+            self.store.sync_configuration(
+                catalog=catalog,
+                agent_config=load_default_agent_config(),
+            )
+
     def create_conversation(self) -> dict[str, Any]:
         request = SchedulingRequest()
         conversation = Conversation(patient_request=request)

@@ -66,6 +66,16 @@ class ClientLogEvent(BaseModel):
     path: str | None = Field(default=None, max_length=500)
 
 
+class CatalogUploadRequest(BaseModel):
+    catalog: dict
+
+
+class CatalogSearchRequest(BaseModel):
+    entity_type: Literal["appointment_type", "provider", "location"]
+    query: str = Field(min_length=1, max_length=300)
+    limit: int = Field(default=8, ge=1, le=50)
+
+
 app = FastAPI(title="Prosper Scheduling API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -146,6 +156,53 @@ def health() -> dict:
         "extractor_mode": service.extractor_mode,
         **service.store.health(),
     }
+
+
+@app.get("/api/catalog")
+def catalog_status() -> dict:
+    catalog = service.catalog
+    return {
+        "catalog_version": catalog.version,
+        "locations": len(catalog.locations),
+        "providers": len(catalog.providers),
+        "appointment_types": len(catalog.appointment_types),
+        "retrieval": "lexical_index",
+    }
+
+
+@app.post("/api/catalog/upload")
+def upload_catalog(request: CatalogUploadRequest) -> dict:
+    try:
+        from scheduling import Catalog
+
+        catalog = Catalog(request.catalog)
+        service.replace_catalog(catalog)
+        evaluation_runner.catalog = catalog
+        context_comparison_runner.catalog = catalog
+        scalability_runner.catalog = catalog
+    except (TypeError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=f"CATALOG_INVALID: {exc}") from exc
+    return {
+        "activated": True,
+        "catalog_version": catalog.version,
+        "locations": len(catalog.locations),
+        "providers": len(catalog.providers),
+        "appointment_types": len(catalog.appointment_types),
+        "retrieval": "lexical_index_ready",
+    }
+
+
+@app.post("/api/catalog/search")
+def search_catalog(request: CatalogSearchRequest) -> dict:
+    started = perf_counter()
+    result = service.catalog.retrieve(
+        request.entity_type,
+        request.query,
+        limit=request.limit,
+    )
+    result["latency_ms"] = round((perf_counter() - started) * 1000, 3)
+    result["catalog_version"] = service.catalog.version
+    return result
 
 
 @app.get("/api/system/logging")

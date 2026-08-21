@@ -2,13 +2,14 @@
 
 import { type ComponentType, useEffect, useState } from "react";
 import { AgentGraphEditor } from "./agent-graph-editor";
+import { CatalogRagPanel } from "./catalog-rag-panel";
 import { ClientObservability } from "./client-observability";
 import { EngineLogicPanel } from "./engine-logic-panel";
 import { EvaluationsPanel } from "./evaluations-panel";
 import { SystemLogsPanel } from "./system-logs-panel";
 import { ThemeControl } from "./theme-control";
 
-type Tab = "test" | "graph" | "engine" | "evaluations" | "logs";
+type Tab = "test" | "graph" | "engine" | "evaluations" | "catalog" | "logs";
 type VoiceCallPanelComponent = ComponentType<{
   endpoint: string;
   onSchedulingTurn: (turn: unknown) => void;
@@ -19,6 +20,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "graph", label: "Agent graph" },
   { id: "engine", label: "Engine logic" },
   { id: "evaluations", label: "Evaluations" },
+  { id: "catalog", label: "Catalog retrieval" },
   { id: "logs", label: "System logs" },
 ];
 
@@ -156,6 +158,8 @@ export default function Home() {
         {activeTab === "evaluations" && (
           <EvaluationsPanel apiUrl={SCHEDULING_API_URL} />
         )}
+
+        {activeTab === "catalog" && <CatalogRagPanel apiUrl={SCHEDULING_API_URL} />}
 
         {activeTab === "engine" && <EngineLogicPanel />}
 

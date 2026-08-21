@@ -32,6 +32,12 @@ class LargeCatalogTests(unittest.TestCase):
             "loc_005",
         )
 
+    def test_retrieval_returns_small_candidates_from_large_index(self) -> None:
+        result = self.catalog.retrieve("appointment_type", "knee MRI", limit=5)
+        self.assertEqual(result["index_size"], 500)
+        self.assertLessEqual(len(result["results"]), 5)
+        self.assertEqual(result["results"][0]["id"], "appt_065")
+
     def test_generated_data_is_isolated_from_original_scenarios(self) -> None:
         original_providers = [
             item for item in self.catalog.providers.values()

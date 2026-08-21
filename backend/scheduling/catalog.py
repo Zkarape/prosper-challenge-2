@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+_RETRIEVAL_STOPWORDS = {
+    "a", "an", "and", "at", "for", "in", "my", "of", "on", "our", "the", "to", "with",
+}
+
+
 def normalize(value: str) -> str:
     value = value.casefold().replace("&", " and ")
     value = re.sub(r"\bdoctor\b", "dr", value)
@@ -53,6 +58,7 @@ class Catalog:
         }
         self.policies = list(data.get("policies", []))
         self.validate()
+        self._retrieval_index = self._build_retrieval_index()
 
     @classmethod
     def from_json(cls, path: str | Path) -> "Catalog":
@@ -122,6 +128,54 @@ class Catalog:
     def resolve_location(self, query: str) -> Resolution:
         return self._resolve(query, self.locations.values(), "location")
 
+    def retrieve(
+        self, entity_type: str, query: str, *, limit: int = 8
+    ) -> dict[str, Any]:
+        """Return a small, explainable retrieval result for the catalog UI.
+
+        This is deliberately lexical retrieval. The catalog is structured
+        operational data, so exact names, aliases, and token overlap are safer
+        than embedding similarity for the first retrieval stage. The scheduler
+        still performs its normal deterministic resolution and policy checks.
+        """
+
+        groups = {
+            "appointment_type": self.appointment_types,
+            "provider": self.providers,
+            "location": self.locations,
+        }
+        if entity_type not in groups:
+            raise ValueError("entity_type must be appointment_type, provider, or location")
+        normalized_query = normalize(query)
+        query_tokens = self._retrieval_tokens(normalized_query)
+        records = self._retrieval_records(entity_type, normalized_query)
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for record in records:
+            phrases = [record["name"], *record.get("aliases", [])]
+            normalized_phrases = [normalize(phrase) for phrase in phrases]
+            record_tokens = set().union(
+                *(self._retrieval_tokens(phrase) for phrase in normalized_phrases)
+            )
+            overlap = len(query_tokens & record_tokens)
+            score = float(overlap)
+            if normalized_query in normalized_phrases:
+                score += 100
+            elif any(normalized_query and normalized_query in phrase for phrase in normalized_phrases):
+                score += 20
+            if score:
+                item = self._summary(record, entity_type)
+                item["retrieval_score"] = round(score, 3)
+                scored.append((score, item))
+        scored.sort(key=lambda item: (-item[0], item[1]["name"], item[1]["id"]))
+        return {
+            "entity_type": entity_type,
+            "query": query,
+            "normalized_query": normalized_query,
+            "index_size": len(groups[entity_type]),
+            "candidate_count": len(scored),
+            "results": [item for _, item in scored[: max(1, min(limit, 50))]],
+        }
+
     def find_entity_mention(self, text: str, entity_type: str) -> str | None:
         """Find an exact catalog name or alias inside a longer utterance.
 
@@ -130,13 +184,8 @@ class Catalog:
         remain ambiguous for the scheduling engine.
         """
 
-        groups = {
-            "appointment_type": self.appointment_types,
-            "provider": self.providers,
-            "location": self.locations,
-        }
-        records = groups[entity_type].values()
         normalized_text = normalize(text)
+        records = self._retrieval_records(entity_type, normalized_text)
         mentions: set[str] = set()
         for record in records:
             for phrase in [record["name"], *record.get("aliases", [])]:
@@ -158,6 +207,7 @@ class Catalog:
             r"^(?:a|an|the|my|our)\s+", "", normalized_query
         )
 
+        records = self._retrieval_records(entity_type, normalized_query, records)
         scored: list[tuple[int, dict[str, Any], str]] = []
         query_tokens = set(normalized_query.split())
         for record in records:
@@ -192,6 +242,50 @@ class Catalog:
         if len(best) == 1:
             return Resolution("RESOLVED", query, best[0], best, method)
         return Resolution("AMBIGUOUS", query, None, best, method)
+
+    def _build_retrieval_index(self) -> dict[str, dict[str, set[str]]]:
+        groups = {
+            "appointment_type": self.appointment_types,
+            "provider": self.providers,
+            "location": self.locations,
+        }
+        index: dict[str, dict[str, set[str]]] = {}
+        for entity_type, records in groups.items():
+            postings: dict[str, set[str]] = {}
+            for record in records.values():
+                for phrase in [record["name"], *record.get("aliases", [])]:
+                    for token in self._retrieval_tokens(normalize(phrase)):
+                        postings.setdefault(token, set()).add(record["id"])
+            index[entity_type] = postings
+        return index
+
+    def _retrieval_records(
+        self,
+        entity_type: str,
+        query: str,
+        records: Iterable[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        source = list(records) if records is not None else list(
+            {
+                "appointment_type": self.appointment_types,
+                "provider": self.providers,
+                "location": self.locations,
+            }[entity_type].values()
+        )
+        ids: set[str] = set()
+        for token in self._retrieval_tokens(query):
+            ids.update(self._retrieval_index.get(entity_type, {}).get(token, set()))
+        if not ids:
+            return source
+        return [record for record in source if record["id"] in ids]
+
+    @staticmethod
+    def _retrieval_tokens(value: str) -> set[str]:
+        return {
+            token
+            for token in value.split()
+            if len(token) > 1 and token not in _RETRIEVAL_STOPWORDS
+        }
 
     @staticmethod
     def _summary(record: dict[str, Any], entity_type: str) -> dict[str, Any]:
