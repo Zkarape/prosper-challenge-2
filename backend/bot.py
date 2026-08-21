@@ -17,8 +17,11 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -26,9 +29,13 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame,
+    InterimTranscriptionFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
     UserStoppedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -51,7 +58,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from observability import configure_logging, get_logger, transcript_fields
 from scheduling import ConversationService, shared_conversation_service
-from scheduling.service import GREETING
+from scheduling.service import GREETING, PreparedTurn
 from agent_builder import AgentConfigRepository
 
 
@@ -60,8 +67,15 @@ configure_logging("voice")
 logger = get_logger("voice")
 
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
-TURN_END_SILENCE_SECS = 0.45
+DEFAULT_TTS_MODEL = "eleven_flash_v2_5"
+VAD_STOP_SECS = float(os.getenv("VOICE_VAD_STOP_SECS", "0.20"))
+TURN_END_SILENCE_SECS = float(os.getenv("VOICE_TURN_END_SILENCE_SECS", "0.20"))
 TURN_END_FAILSAFE_SECS = 2.5
+SPECULATION_MIN_WORDS = 4
+SPECULATION_MIN_CHARS = 20
+SPECULATION_STABILITY_SECS = float(
+    os.getenv("VOICE_SPECULATION_STABILITY_SECS", "0.12")
+)
 
 transport_params = {
     "webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True),
@@ -76,6 +90,20 @@ def _required_environment(name: str) -> str:
             "Add it to backend/.env and restart make run."
         )
     return value
+
+
+def _spoken_text_key(text: str) -> str:
+    return " ".join(part.strip(".,!?;:\"'()[]{}").casefold() for part in text.split())
+
+
+@dataclass
+class QueuedVoiceTurn:
+    patient_text: str
+    turn_boundary_ms: int
+    speech_stopped_at: float
+    message_id: str | None
+    speculative_text: str | None
+    preparation_task: asyncio.Task[PreparedTurn | None] | None
 
 
 class SchedulingTurnProcessor(FrameProcessor):
@@ -93,11 +121,32 @@ class SchedulingTurnProcessor(FrameProcessor):
         self.rtvi = None
         self._transcript_segments: list[str] = []
         self._first_transcript_at: float | None = None
-        self._turn_queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue()
+        self._speech_stopped_at: float | None = None
+        self._speculative_text: str | None = None
+        self._speculative_message_id: str | None = None
+        self._preparation_task: asyncio.Task[PreparedTurn | None] | None = None
+        self._preparation_started = False
+        self._pending_audio: deque[dict[str, Any]] = deque()
+        self._turn_queue: asyncio.Queue[QueuedVoiceTurn] = asyncio.Queue()
         self._turn_worker_task: asyncio.Task | None = None
+        self._turn_in_flight = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            # Silero emits this after its stop window. Backdate the marker so
+            # the displayed latency includes the endpointing delay.
+            self._speech_stopped_at = time.perf_counter() - VAD_STOP_SECS
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, InterimTranscriptionFrame):
+            patient_text = frame.text.strip()
+            if patient_text:
+                await self._maybe_prepare_turn(patient_text)
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, TranscriptionFrame):
             patient_text = frame.text.strip()
             if patient_text:
@@ -109,6 +158,7 @@ class SchedulingTurnProcessor(FrameProcessor):
                     conversation_id=self.conversation_id,
                     **transcript_fields(patient_text),
                 ).debug("Buffered patient speech segment")
+                await self._maybe_prepare_turn(" ".join(self._transcript_segments))
             await self.push_frame(frame, direction)
             return
 
@@ -126,12 +176,73 @@ class SchedulingTurnProcessor(FrameProcessor):
         self._first_transcript_at = None
         if not patient_text:
             return
+        work = QueuedVoiceTurn(
+            patient_text=patient_text,
+            turn_boundary_ms=turn_boundary_ms,
+            speech_stopped_at=self._speech_stopped_at or time.perf_counter(),
+            message_id=self._speculative_message_id,
+            speculative_text=self._speculative_text,
+            preparation_task=self._preparation_task,
+        )
+        self._speech_stopped_at = None
+        self._speculative_text = None
+        self._speculative_message_id = None
+        self._preparation_task = None
+        self._preparation_started = False
 
         # Never hold Pipecat's frame processor open while the LLM and database
         # work runs. Audio, STT and VAD frames must keep flowing. A single
         # consumer still preserves conversation turn order.
-        await self._turn_queue.put((patient_text, turn_boundary_ms))
+        await self._turn_queue.put(work)
         self._ensure_turn_worker()
+
+    async def _maybe_prepare_turn(self, patient_text: str) -> None:
+        """Start at most one side-effect-free preview for the current utterance."""
+
+        if (
+            self._turn_in_flight
+            or not self._turn_queue.empty()
+            or not hasattr(self.service, "prepare_turn")
+        ):
+            return
+        if len(patient_text) < SPECULATION_MIN_CHARS:
+            return
+        if len(patient_text.split()) < SPECULATION_MIN_WORDS:
+            return
+
+        if self._preparation_task is not None:
+            if self._preparation_task.done() or self._preparation_started:
+                return
+            # Use the newest interim if the provider call has not begun yet.
+            self._preparation_task.cancel()
+        else:
+            self._preparation_started = False
+
+        message_id = self._speculative_message_id or f"voice_{uuid4().hex[:12]}"
+        self._speculative_text = patient_text
+        self._speculative_message_id = message_id
+        self._preparation_task = asyncio.create_task(
+            self._prepare_after_stable_transcript(patient_text, message_id),
+            name="speculative-scheduling-turn",
+        )
+
+    async def _prepare_after_stable_transcript(
+        self, patient_text: str, message_id: str
+    ) -> PreparedTurn | None:
+        await asyncio.sleep(SPECULATION_STABILITY_SECS)
+        self._preparation_started = True
+        logger.bind(
+            event="speculative_turn_started",
+            conversation_id=self.conversation_id,
+            turn_id=message_id,
+            transcript_chars=len(patient_text),
+        ).debug("Started a side-effect-free speculative turn")
+        return await asyncio.to_thread(
+            self.service.prepare_turn,
+            self.conversation_id,
+            patient_text,
+            message_id=message_id,
+        )
 
     def _ensure_turn_worker(self) -> None:
         if self._turn_worker_task is not None and not self._turn_worker_task.done():
@@ -145,10 +256,12 @@ class SchedulingTurnProcessor(FrameProcessor):
 
     async def _run_turns(self) -> None:
         while True:
-            patient_text, turn_boundary_ms = await self._turn_queue.get()
+            work = await self._turn_queue.get()
             try:
-                await self._process_complete_turn(patient_text, turn_boundary_ms)
+                self._turn_in_flight = True
+                await self._process_complete_turn(work)
             finally:
+                self._turn_in_flight = False
                 self._turn_queue.task_done()
 
     async def wait_for_pending_turns(self) -> None:
@@ -157,6 +270,9 @@ class SchedulingTurnProcessor(FrameProcessor):
         await self._turn_queue.join()
 
     async def cleanup(self):
+        if self._preparation_task is not None:
+            self._preparation_task.cancel()
+            self._preparation_task = None
         if self._turn_worker_task is not None:
             if getattr(self, "_task_manager", None) is not None:
                 await self.cancel_task(self._turn_worker_task)
@@ -169,9 +285,9 @@ class SchedulingTurnProcessor(FrameProcessor):
             self._turn_worker_task = None
         await super().cleanup()
 
-    async def _process_complete_turn(
-        self, patient_text: str, turn_boundary_ms: int
-    ) -> None:
+    async def _process_complete_turn(self, work: QueuedVoiceTurn) -> None:
+        patient_text = work.patient_text
+        turn_boundary_ms = work.turn_boundary_ms
 
         logger.bind(
             event="voice_turn_committed",
@@ -181,14 +297,55 @@ class SchedulingTurnProcessor(FrameProcessor):
         ).info("Patient voice turn committed")
         try:
             scheduling_started_at = time.perf_counter()
-            result = await asyncio.to_thread(
-                self.service.process_turn,
-                self.conversation_id,
-                patient_text,
-            )
+            result = None
+            speculation_reason = "not_started"
+            if work.preparation_task is not None:
+                if _spoken_text_key(work.speculative_text or "") == _spoken_text_key(
+                    patient_text
+                ):
+                    prepared = await work.preparation_task
+                    if prepared is not None:
+                        result = await asyncio.to_thread(
+                            self.service.commit_prepared_turn,
+                            self.conversation_id,
+                            patient_text,
+                            prepared,
+                        )
+                    speculation_reason = "accepted" if result is not None else "stale"
+                else:
+                    work.preparation_task.cancel()
+                    speculation_reason = "transcript_changed"
+            if result is None:
+                if work.message_id is None:
+                    result = await asyncio.to_thread(
+                        self.service.process_turn,
+                        self.conversation_id,
+                        patient_text,
+                    )
+                else:
+                    result = await asyncio.to_thread(
+                        self.service.process_turn,
+                        self.conversation_id,
+                        patient_text,
+                        message_id=work.message_id,
+                    )
+                result["speculation"] = {
+                    "used": False,
+                    "reason": speculation_reason,
+                }
             scheduling_ms = round(
                 (time.perf_counter() - scheduling_started_at) * 1000
             )
+            tts_requested_at = time.perf_counter()
+            speech_end_to_tts_request_ms = round(
+                (tts_requested_at - work.speech_stopped_at) * 1000
+            )
+            result["voice_timing"] = {
+                "turn_boundary_ms": turn_boundary_ms,
+                "scheduling_ms": scheduling_ms,
+                "speech_end_to_tts_request_ms": speech_end_to_tts_request_ms,
+                "speech_end_to_first_audio_ms": None,
+            }
             logger.bind(
                 event="voice_turn_completed",
                 conversation_id=self.conversation_id,
@@ -202,6 +359,7 @@ class SchedulingTurnProcessor(FrameProcessor):
                 ),
                 turn_boundary_ms=turn_boundary_ms,
                 scheduling_ms=scheduling_ms,
+                speculation_used=result["speculation"]["used"],
             ).info("Voice scheduling turn completed")
             if self.rtvi is not None:
                 await self.rtvi.send_server_message(
@@ -210,13 +368,16 @@ class SchedulingTurnProcessor(FrameProcessor):
                         "payload": {
                             **result,
                             "patient_text": patient_text,
-                            "voice_timing": {
-                                "turn_boundary_ms": turn_boundary_ms,
-                                "scheduling_ms": scheduling_ms,
-                            },
                         },
                     }
                 )
+            self._pending_audio.append(
+                {
+                    "speech_stopped_at": work.speech_stopped_at,
+                    "tts_requested_at": tts_requested_at,
+                    "result": result,
+                }
+            )
             await self.push_frame(TTSSpeakFrame(text=result["assistant_message"]))
         except Exception as exc:
             logger.bind(
@@ -251,6 +412,50 @@ class SchedulingTurnProcessor(FrameProcessor):
                 )
             )
 
+    async def on_first_tts_audio(self) -> None:
+        """Attach the user-visible latency when TTS emits its first audio chunk."""
+
+        if not self._pending_audio:
+            return
+        pending = self._pending_audio.popleft()
+        now = time.perf_counter()
+        result = pending["result"]
+        timing = result["voice_timing"]
+        timing["tts_request_to_first_audio_ms"] = round(
+            (now - pending["tts_requested_at"]) * 1000
+        )
+        timing["speech_end_to_first_audio_ms"] = round(
+            (now - pending["speech_stopped_at"]) * 1000
+        )
+        logger.bind(
+            event="voice_first_audio",
+            conversation_id=self.conversation_id,
+            turn_id=result.get("message_id"),
+            **timing,
+        ).info("Assistant first audio emitted")
+        if self.rtvi is not None:
+            await self.rtvi.send_server_message(
+                {"type": "scheduling_turn", "payload": result}
+            )
+
+
+class FirstAudioLatencyProcessor(FrameProcessor):
+    """Observe TTS output without changing the audio stream."""
+
+    def __init__(self, scheduler: SchedulingTurnProcessor, **kwargs):
+        super().__init__(**kwargs)
+        self.scheduler = scheduler
+        self._waiting_for_audio = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSStartedFrame):
+            self._waiting_for_audio = True
+        elif isinstance(frame, TTSAudioRawFrame) and self._waiting_for_audio:
+            self._waiting_for_audio = False
+            await self.scheduler.on_first_tts_audio()
+        await self.push_frame(frame, direction)
+
 
 def build_pipeline(
     *,
@@ -260,20 +465,15 @@ def build_pipeline(
     turn_detector: FrameProcessor,
     scheduler: FrameProcessor,
     tts: Any,
+    latency_observer: FrameProcessor | None = None,
 ) -> Pipeline:
     """Build the observable STT -> scheduler -> TTS pipeline."""
 
-    return Pipeline(
-        [
-            transport.input(),
-            vad,
-            stt,
-            turn_detector,
-            scheduler,
-            tts,
-            transport.output(),
-        ]
-    )
+    processors = [transport.input(), vad, stt, turn_detector, scheduler, tts]
+    if latency_observer is not None:
+        processors.append(latency_observer)
+    processors.append(transport.output())
+    return Pipeline(processors)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
@@ -306,7 +506,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     )
     vad = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
-            params=VADParams(start_secs=0.15, stop_secs=0.35)
+            params=VADParams(start_secs=0.15, stop_secs=VAD_STOP_SECS)
         )
     )
     turn_detector = UserTurnProcessor(
@@ -321,10 +521,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         user_turn_stop_timeout=TURN_END_FAILSAFE_SECS,
     )
     scheduler = SchedulingTurnProcessor(service, created["conversation_id"])
+    latency_observer = FirstAudioLatencyProcessor(scheduler)
     tts = ElevenLabsTTSService(
         api_key=elevenlabs_key,
         settings=ElevenLabsTTSService.Settings(
-            voice=os.getenv("ELEVENLABS_VOICE_ID", agent_config.voice_id)
+            voice=os.getenv("ELEVENLABS_VOICE_ID", agent_config.voice_id),
+            model=os.getenv("ELEVENLABS_TTS_MODEL", DEFAULT_TTS_MODEL),
         ),
     )
     pipeline = build_pipeline(
@@ -334,6 +536,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         turn_detector=turn_detector,
         scheduler=scheduler,
         tts=tts,
+        latency_observer=latency_observer,
     )
     worker = PipelineWorker(
         pipeline,

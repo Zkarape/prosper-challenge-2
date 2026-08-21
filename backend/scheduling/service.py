@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +57,19 @@ class Conversation:
         """Temporary compatibility for callers created before the rename."""
 
         return self.patient_request
+
+
+@dataclass(frozen=True)
+class PreparedTurn:
+    """A side-effect-free voice turn computed against one state snapshot."""
+
+    conversation_id: str
+    patient_text_key: str
+    message_id: str
+    base_signature: tuple[Any, ...]
+    shadow: Conversation
+    result: dict[str, Any]
+    preparation_ms: float
 
 
 class ConversationService:
@@ -303,12 +317,130 @@ class ConversationService:
             ).exception("Scheduling turn failed")
             raise
 
+    def prepare_turn(
+        self,
+        conversation_id: str,
+        utterance: str,
+        *,
+        message_id: str | None = None,
+    ) -> PreparedTurn | None:
+        """Compute a safe preview without changing durable conversation state.
+
+        Voice partial transcripts can arrive before the final turn boundary. A
+        preview runs the expensive extraction and response-writing stages against
+        a private snapshot. It is deliberately disabled while an offer is pending,
+        because a speculative confirmation must never call the booking adapter.
+        """
+
+        clean_utterance = utterance.strip()
+        if not clean_utterance:
+            return None
+        current = self.get_conversation(conversation_id)
+        with current.lock:
+            if current.status != "ACTIVE" or current.pending_offer is not None:
+                return None
+            base_signature = self._conversation_signature(current)
+            shadow = self._clone_conversation(current)
+
+        preview_message_id = message_id or f"preview_{uuid4().hex[:12]}"
+        started = perf_counter()
+        try:
+            result = self._process_turn_locked(
+                shadow,
+                clean_utterance,
+                message_id=preview_message_id,
+                speculative=True,
+            )
+        except Exception:
+            service_logger.bind(
+                event="speculative_turn_failed",
+                conversation_id=conversation_id,
+                turn_id=preview_message_id,
+            ).exception("Speculative voice turn failed")
+            return None
+        return PreparedTurn(
+            conversation_id=conversation_id,
+            patient_text_key=self._patient_text_key(clean_utterance),
+            message_id=preview_message_id,
+            base_signature=base_signature,
+            shadow=shadow,
+            result=result,
+            preparation_ms=round((perf_counter() - started) * 1000, 2),
+        )
+
+    def commit_prepared_turn(
+        self,
+        conversation_id: str,
+        utterance: str,
+        prepared: PreparedTurn,
+    ) -> dict[str, Any] | None:
+        """Atomically use a preview only when its text and base state still match."""
+
+        if prepared.conversation_id != conversation_id:
+            return None
+        if self._patient_text_key(utterance) != prepared.patient_text_key:
+            return None
+        with self.store.locked(conversation_id) as conversation:
+            if self._conversation_signature(conversation) != prepared.base_signature:
+                return None
+            shadow = prepared.shadow
+            conversation.patient_request = deepcopy(shadow.patient_request)
+            conversation.message_number = shadow.message_number
+            conversation.pending_offer = deepcopy(shadow.pending_offer)
+            conversation.booking = deepcopy(shadow.booking)
+            conversation.last_result = deepcopy(shadow.last_result)
+            conversation.processed_messages = deepcopy(shadow.processed_messages)
+            conversation.rejected_alternatives = set(shadow.rejected_alternatives)
+            conversation.status = shadow.status
+            conversation.outcome = shadow.outcome
+            conversation.safe = shadow.safe
+            conversation.ended_at = shadow.ended_at
+
+            result = conversation.processed_messages[prepared.message_id]
+            result["patient_text"] = utterance.strip()
+            result["speculation"] = {
+                "used": True,
+                "preparation_ms": prepared.preparation_ms,
+            }
+            return result
+
+    @staticmethod
+    def _patient_text_key(text: str) -> str:
+        return " ".join(re.findall(r"\w+", text.casefold()))
+
+    @staticmethod
+    def _conversation_signature(conversation: Conversation) -> tuple[Any, ...]:
+        return (
+            conversation.message_number,
+            conversation.patient_request.fingerprint(),
+            conversation.pending_offer.offer_id if conversation.pending_offer else None,
+            conversation.status,
+        )
+
+    @staticmethod
+    def _clone_conversation(conversation: Conversation) -> Conversation:
+        return Conversation(
+            patient_request=deepcopy(conversation.patient_request),
+            message_number=conversation.message_number,
+            pending_offer=deepcopy(conversation.pending_offer),
+            booking=deepcopy(conversation.booking),
+            last_result=deepcopy(conversation.last_result),
+            processed_messages=deepcopy(conversation.processed_messages),
+            rejected_alternatives=set(conversation.rejected_alternatives),
+            status=conversation.status,
+            outcome=conversation.outcome,
+            safe=conversation.safe,
+            started_at=conversation.started_at,
+            ended_at=conversation.ended_at,
+        )
+
     def _process_turn_locked(
         self,
         conversation: Conversation,
         utterance: str,
         *,
         message_id: str | None,
+        speculative: bool = False,
     ) -> dict[str, Any]:
         conversation_id = conversation.patient_request.conversation_id
         clean_utterance = utterance.strip()
@@ -336,6 +468,7 @@ class ConversationService:
                 if conversation.pending_offer is not None
                 else None
             ),
+            speculative=speculative,
             **transcript_fields(clean_utterance),
         ).info("Scheduling turn started")
         trace: list[dict[str, Any]] = []
@@ -568,6 +701,7 @@ class ConversationService:
             input_tokens=total_input_tokens,
             cached_input_tokens=total_cached_tokens,
             output_tokens=total_output_tokens,
+            speculative=speculative,
         ).info("Scheduling turn completed")
         return result
 

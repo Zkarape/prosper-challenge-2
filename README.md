@@ -7,10 +7,11 @@ Voice AI for healthcare scheduling with an embedded live-call tester, observatio
 
 ```
 browser mic -> Pipecat WebRTC -> ElevenLabs STT fragments
-    -> local VAD + semantic turn detection -> completed patient turn
+    -> safe preview while the patient is still speaking
+    -> local VAD + semantic turn detection -> verified patient turn
     -> structured LLM extraction -> deterministic scheduler
     -> checked response plan -> LLM response writer
-    -> ElevenLabs TTS -> browser audio
+    -> ElevenLabs Flash TTS -> browser audio
 ```
 
 The live call is rendered inside Prosper Agent Studio. The user is never redirected to Pipecat's prebuilt client.
@@ -48,6 +49,14 @@ npm run dev
 
 Open `http://localhost:3001`, press the recording button under **Scheduling agent**, and allow microphone access. Speak naturally and pause when finished. Pipecat combines STT fragments until the patient’s thought is complete, then sends one authoritative turn to the scheduling pipeline. Both sides of that committed conversation appear on the same screen while the assistant audio plays there.
 
+To reduce the pause after speech, a stable partial transcript may prepare extraction,
+the deterministic decision, and response text against a private state snapshot.
+The preview is used only when the final transcript and conversation fingerprint
+still match; otherwise it is discarded and the normal checked path runs. Previewing
+is disabled while a booking offer is awaiting confirmation. The **Context usage**
+panel shows whether the fast path was used and the measured time from the estimated
+end of speech to the first assistant audio frame.
+
 After a processed turn, open **Agent graph** to see which stages ran and inspect their validated inputs, decisions, token usage, and booking result.
 
 Open **System logs** to follow correlated API, scheduling, booking, voice, and
@@ -79,6 +88,11 @@ available and the local structured fallback otherwise. The extraction model is
 configured by `EXTRACTION_MODEL`; `RESPONSE_MODEL` controls the model that phrases
 the checked response. When OpenAI is unavailable, the checked deterministic text
 remains a safe fallback.
+
+Voice latency settings are explicit in `backend/.env`: `VOICE_VAD_STOP_SECS` and
+`VOICE_TURN_END_SILENCE_SECS` control endpointing, while
+`ELEVENLABS_TTS_MODEL=eleven_flash_v2_5` selects the low-latency TTS model. Lower
+endpointing values respond faster but can split a thoughtful pause into two turns.
 
 ## Large-catalog retrieval demo
 

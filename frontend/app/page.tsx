@@ -52,6 +52,13 @@ type TurnResponse = {
   state_patch: Record<string, unknown>;
   trace: TraceEvent[];
   total_latency_ms: number;
+  voice_timing?: {
+    speech_end_to_first_audio_ms?: number | null;
+  };
+  speculation?: {
+    used?: boolean;
+    reason?: string;
+  };
   extractor_mode: string;
   usage: {
     model: string | null;
@@ -186,6 +193,8 @@ function UsageHistory({ turns }: { turns: TurnResponse[] }) {
           <p>Input context for each patient request.</p>
         </div>
         <div className="usage-totals">
+          <span><small>Fast path</small><strong>{latest ? (latest.speculation?.used ? "Used" : "Fallback") : "—"}</strong></span>
+          <span><small>First audio</small><strong>{latest?.voice_timing?.speech_end_to_first_audio_ms != null ? `${latest.voice_timing.speech_end_to_first_audio_ms} ms` : "—"}</strong></span>
           <span><small>Latest input</small><strong>{latest?.usage.input_tokens.toLocaleString() ?? "—"}</strong></span>
           <span><small>Session total</small><strong>{sessionTokens ? sessionTokens.toLocaleString() : "—"}</strong></span>
         </div>

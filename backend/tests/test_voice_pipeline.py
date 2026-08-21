@@ -10,13 +10,21 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from bot import (
+    FirstAudioLatencyProcessor,
     GREETING,
     TURN_END_FAILSAFE_SECS,
     TURN_END_SILENCE_SECS,
     SchedulingTurnProcessor,
     build_pipeline,
 )
-from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    InterimTranscriptionFrame,
+    TTSAudioRawFrame,
+    TTSSpeakFrame,
+    TTSStartedFrame,
+    TranscriptionFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
@@ -149,6 +157,81 @@ class VoiceTurnPublishingTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(call.args[0], TTSSpeakFrame)
         )
         self.assertIsInstance(spoken, TTSSpeakFrame)
+        self.assertEqual(spoken.text, result["assistant_message"])
+
+        latency_observer = FirstAudioLatencyProcessor(processor)
+        latency_observer.push_frame = AsyncMock()
+        await latency_observer.process_frame(
+            TTSStartedFrame(), FrameDirection.DOWNSTREAM
+        )
+        await latency_observer.process_frame(
+            TTSAudioRawFrame(audio=b"\x00\x00", sample_rate=24000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        updated = rtvi.messages[-1]["payload"]
+        self.assertIsNotNone(
+            updated["voice_timing"]["speech_end_to_first_audio_ms"]
+        )
+        await latency_observer.cleanup()
+        await processor.cleanup()
+
+    async def test_matching_interim_transcript_uses_prepared_turn(self):
+        result = {
+            "assistant_message": "Are you a new or existing patient?",
+            "engine_result": {"next_action": {"type": "ASK_REQUIRED_FIELD"}},
+            "state_patch": {"appointment_type": {"raw_text": "knee MRI"}},
+            "usage": {"input_tokens": 120, "output_tokens": 24},
+            "message_id": "voice_preview",
+            "message_number": 1,
+            "speculation": {"used": True},
+        }
+
+        class Service:
+            def prepare_turn(self, conversation_id, patient_text, *, message_id):
+                self.prepared = (conversation_id, patient_text, message_id)
+                return object()
+
+            def commit_prepared_turn(self, conversation_id, patient_text, prepared):
+                self.committed = (conversation_id, patient_text, prepared)
+                return result
+
+            def process_turn(self, *args, **kwargs):
+                raise AssertionError("matching speculation should avoid a second model path")
+
+        service = Service()
+        processor = SchedulingTurnProcessor(service, "conversation_test")
+        processor.push_frame = AsyncMock()
+        transcript = "I want to book a knee MRI"
+
+        await processor.process_frame(
+            InterimTranscriptionFrame(
+                text=transcript,
+                user_id="patient",
+                timestamp="2026-08-21T00:00:00Z",
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            TranscriptionFrame(
+                text=f"{transcript}.",
+                user_id="patient",
+                timestamp="2026-08-21T00:00:01Z",
+                finalized=True,
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        await processor.process_frame(
+            UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await processor.wait_for_pending_turns()
+
+        self.assertEqual(service.prepared[1], f"{transcript}.")
+        self.assertEqual(service.committed[1], f"{transcript}.")
+        spoken = next(
+            call.args[0]
+            for call in processor.push_frame.await_args_list
+            if isinstance(call.args[0], TTSSpeakFrame)
+        )
         self.assertEqual(spoken.text, result["assistant_message"])
         await processor.cleanup()
 

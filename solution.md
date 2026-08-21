@@ -161,15 +161,32 @@ or transcript frames, while patient turns still remain ordered.
 Voice is an adapter around the scheduling core. Replacing WebRTC, STT, or TTS does
 not require rewriting extraction, policy, availability, or booking logic.
 
-The response writer makes the latency trade-off visible. In a three-turn live
-sample, extraction took a median 2.19 seconds, response writing 0.99 seconds, and
-the complete scheduling service 2.88 seconds. A separate cold ElevenLabs streaming
-request produced its first audio in 0.69 seconds. With the configured 0.45-second
-speech-stop window, the estimated median time from the patient's final word to
-first assistant audio is therefore about 4.0 seconds. These are development
-measurements, not a production SLA; provider load, network location, warm
-connections, and response length will move them. Streaming the checked response
-writer into TTS is the clearest next latency optimization.
+The original voice path waited until speech ended and then ran extraction and
+response writing in sequence. That made the assistant safe, but it also placed all
+model latency directly inside the silence the patient could feel. The optimized
+path overlaps that work with the end of the patient's speech. After a partial
+transcript remains stable for 120 milliseconds, the service can run extraction,
+the deterministic engine, and response writing against a private copy of the
+conversation. No durable state is changed during this preview.
+
+At the real turn boundary, the preview is committed only if two checks pass: the
+final transcript must match the preview text after harmless punctuation changes,
+and the durable conversation fingerprint must be unchanged. If either check fails,
+the result is discarded and the ordinary checked path runs. Previewing is disabled
+while an offer is pending, so speculative work can never confirm an appointment or
+call the booking adapter. Discarded model calls still remain in the usage ledger
+because they cost money.
+
+The endpointing budget is now about 200 milliseconds for VAD plus 200 milliseconds
+for the local turn boundary. ElevenLabs uses its Flash v2.5 model, and the pipeline
+records the time from estimated speech end to the first emitted audio frame. The UI
+shows that measurement and whether the preview was used. When the preview has
+finished before speech ends, the post-speech model work becomes an atomic local
+commit and a warm path can target first audio in under one second. This is a target,
+not a claimed SLA: a short utterance, a changed interim transcript, a cold provider,
+or slow model response takes the fallback path and can still take several seconds.
+The measurement in the product makes that distinction testable instead of hiding
+it behind a theoretical estimate.
 
 ## Why Pipecat does not own the scheduling context
 
@@ -203,10 +220,11 @@ do not automatically receive Pipecat's cross-provider message conversion,
 token-streamed LLM-to-TTS handoff, spoken-response aggregation, context
 summarization or interruption-aware function handling.
 
-If first-audio latency becomes the dominant problem, I would stream the bounded
-response writer through Pipecat and let TTS begin at the first complete sentence.
-I would also adopt more of Pipecat's context features when the voice layer gains
-multiple LLM-driven conversation nodes or long-running informational tools.
+If first-audio latency remains the dominant problem after measuring real calls, I
+would evaluate streaming complete checked sentences into TTS. I did not stream
+unvalidated model tokens because a later unsafe claim could already have been
+spoken. I would also adopt more of Pipecat's context features when the voice layer
+gains multiple LLM-driven conversation nodes or long-running informational tools.
 Pipecat would then own the short-lived spoken conversation:
 the system prompt would use the LLM service's `system_instruction`, aggregators
 would record what the patient said and what TTS actually spoke, and registered
@@ -288,7 +306,7 @@ filtering, weak ambiguous-name handling, inconsistent yes/no behavior, irrelevan
 questions, and unstable blocker codes. I converted those patterns into catalog
 aliases, engine ordering rules, validation rules, pending-offer behavior, and
 meaning-based grader comparisons. The final regression run passes all 40 cases.
-The current backend suite runs 88 tests: 86 pass and 2 PostgreSQL integration
+The current backend suite runs 93 tests: 91 pass and 2 PostgreSQL integration
 tests are skipped unless a test database URL is supplied.
 
 This is a regression suite, not a claim of perfect real-world accuracy. Only the
