@@ -1,8 +1,9 @@
-"""Expand catalog.json with a deterministic, isolated stress-test catalog.
+"""Generate a deterministic, isolated stress-test catalog.
 
 The hand-maintained records keep their existing IDs and relationships. Generated
 records use ``stress_*`` IDs and only reference other generated records, so the
-existing evaluation cases keep the same correct answers.
+existing evaluation cases keep the same correct answers. The normal runtime catalog
+is read as input and is never overwritten.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
+OUTPUT_PATH = Path(__file__).with_name("large-catalog.json")
 TARGET_LOCATIONS = 250
 TARGET_PROVIDERS = 2_500
 TARGET_APPOINTMENT_TYPES = 500
@@ -320,11 +322,11 @@ def build() -> dict:
 
 def main() -> None:
     data = build()
-    CATALOG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    OUTPUT_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     print(
         f"Wrote {len(data['locations'])} locations, "
         f"{len(data['providers'])} providers, and "
-        f"{len(data['appointment_types'])} appointment types to {CATALOG_PATH}"
+        f"{len(data['appointment_types'])} appointment types to {OUTPUT_PATH}"
     )
 
 

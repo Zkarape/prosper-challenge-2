@@ -1,24 +1,27 @@
 # Catalog data
 
-`catalog.json` is a synthetic clinic catalog for the **Phase 2 context-management**
-work: a scheduling agent has to navigate it reliably and cost-effectively. It is
-deliberately **large** (so dumping it all into the prompt is expensive/inaccurate) and
-deliberately **messy** (so naive matching fails).
+The data folder contains two synthetic clinic catalogs for the **Phase 2
+context-management** work:
 
-Stress profile: **250 locations · 2,500 providers · 500 appointment types**.
+- `catalog.json` is the fast runtime and 40-case evaluation catalog: 8 locations,
+  50 providers, and 82 appointment types.
+- `large-catalog.json` is the stress catalog: 250 locations, 2,500 providers, and
+  500 appointment types.
 
-The first 8 locations, 50 providers, and 82 appointment types are the original
-evaluation catalog. Records with `stress_*` IDs expand it without changing those
-original relationships. Regenerate the same dataset with:
+The stress catalog contains every runtime record unchanged. Records with
+`stress_*` IDs expand it without changing the original relationships. Regenerate
+the same stress dataset with:
 
 ```bash
 python backend/data/generate_large_catalog.py
 ```
 
-This size tests whether extraction and deterministic catalog resolution stay
-accurate without sending the full catalog to the LLM. The generated data includes
-duplicate provider names, shared aliases, multiple time zones, multi-location
-providers, referrals, new-patient restrictions, and capability-gated services.
+The application uses `catalog.json` by default so the defence demo and normal test
+suite remain fast. The dedicated large-catalog tests use `large-catalog.json` to
+measure whether extraction and deterministic catalog resolution stay accurate
+without sending the full catalog to the LLM. The stress data includes duplicate
+provider names, shared aliases, multiple time zones, multi-location providers,
+referrals, new-patient restrictions, and capability-gated services.
 
 ## Schema
 

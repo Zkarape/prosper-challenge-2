@@ -15,7 +15,7 @@ from scheduling import Catalog, ConversationService, RuleBasedExtractor  # noqa:
 class LargeCatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.catalog = Catalog.from_json(BACKEND / "data" / "catalog.json")
+        cls.catalog = Catalog.from_json(BACKEND / "data" / "large-catalog.json")
 
     def test_stress_profile_has_expected_size(self) -> None:
         self.assertEqual(len(self.catalog.locations), 250)

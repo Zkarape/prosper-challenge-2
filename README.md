@@ -82,6 +82,7 @@ The text API remains available at `http://127.0.0.1:8000` for automated tests an
 | `backend/conversation/` | Server-owned pending offers and option IDs used for selections and confirmation. |
 | `backend/agent_builder/` | All agent-building code. `schema.py` = the declarative `AgentConfig` / `Node` / `Edge` contract; `builder.py` = `AgentBuilder`, which loads + validates the JSON and compiles it into a Pipecat Flows graph. |
 | `backend/example_flow.json` | The example agent **as data** — a clinic scheduler. The starting point for the Phase 2 context-management work. |
-| `backend/data/catalog.json` | A deliberately large, deliberately messy clinic catalog (locations, providers, appointment types, booking rules) for the Phase 2 work. See [`backend/data/README.md`](backend/data/README.md). |
+| `backend/data/catalog.json` | The fast runtime and 40-case evaluation catalog. |
+| `backend/data/large-catalog.json` | The 250-location, 2,500-provider, 500-appointment stress catalog. See [`backend/data/README.md`](backend/data/README.md). |
 
 The original graph builder remains available for the Phase 1 editor, but booking execution no longer depends on an LLM-authored graph transition.
