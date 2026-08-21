@@ -145,6 +145,7 @@ scalability_runner = ScalabilityRunner(catalog=service.catalog)
 get_logger("startup").bind(
     event="api_started",
     extractor_mode=service.extractor_mode,
+    response_writer_mode=service.response_writer_mode,
     storage_mode=service.storage_mode,
 ).info("Scheduling API initialized")
 
@@ -154,6 +155,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "extractor_mode": service.extractor_mode,
+        "response_writer_mode": service.response_writer_mode,
         **service.store.health(),
     }
 

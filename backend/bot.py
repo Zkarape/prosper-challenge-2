@@ -4,7 +4,8 @@ Runtime path:
 
     browser microphone -> WebRTC -> ElevenLabs final transcript
         -> structured LLM extraction -> deterministic scheduling engine
-        -> checked response -> ElevenLabs TTS -> browser audio
+        -> checked response plan -> LLM response writer
+        -> ElevenLabs TTS -> browser audio
 
 Each processed voice turn is also sent to the embedded frontend as an RTVI
 server message so extraction usage, state, rules, and the next action are
@@ -291,6 +292,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         event="voice_session_started",
         conversation_id=created["conversation_id"],
         extractor_mode=service.extractor_mode,
+        response_writer_mode=service.response_writer_mode,
         storage_mode=service.storage_mode,
         transport="webrtc",
     ).info("Voice scheduling session started")

@@ -25,7 +25,8 @@ microphone
   -> availability is searched
   -> patient confirms an exact offer
   -> booking system confirms the booking
-  -> spoken response
+  -> LLM phrases the checked response plan
+  -> ElevenLabs speaks that exact text
 ```
 
 The LLM understands language. It does not decide what the clinic allows. This is
@@ -75,6 +76,14 @@ Finally, an appointment is considered booked only when the booking adapter retur
 `confirmed` with the matching offer, candidate, and slot. An assistant message is
 never treated as proof of success. The booking path is idempotent, so retrying the
 same confirmed request returns the same booking rather than creating a duplicate.
+
+The engine then creates the authoritative response plan. A second, small LLM call
+turns that plan into one or two natural sentences. It has no booking tools and is
+not allowed to change the decision, slot, provider, location, policy result, or
+booking state. Application code rejects unsafe output, such as a false booking
+claim, and falls back to the checked deterministic sentence if the call fails or
+breaks the contract. The accepted text is both displayed in the studio and sent
+unchanged to ElevenLabs text-to-speech.
 
 ## Why I did not use RAG for the clinic catalog
 
@@ -136,8 +145,8 @@ The engine follows a first-action-wins order:
 9. Block or hand off when no safe path remains.
 
 The engine returns typed decisions, candidates, rule results, blocker codes, and
-one next action. Assistant text is generated from that checked result. This keeps
-natural-language interpretation flexible while making the business outcome
+one next action. The response-writing LLM phrases that checked result but cannot
+change it. This keeps the conversation natural while making the business outcome
 repeatable and testable.
 
 ## Voice and turn handling
@@ -152,6 +161,16 @@ or transcript frames, while patient turns still remain ordered.
 Voice is an adapter around the scheduling core. Replacing WebRTC, STT, or TTS does
 not require rewriting extraction, policy, availability, or booking logic.
 
+The response writer makes the latency trade-off visible. In a three-turn live
+sample, extraction took a median 2.19 seconds, response writing 0.99 seconds, and
+the complete scheduling service 2.88 seconds. A separate cold ElevenLabs streaming
+request produced its first audio in 0.69 seconds. With the configured 0.45-second
+speech-stop window, the estimated median time from the patient's final word to
+first assistant audio is therefore about 4.0 seconds. These are development
+measurements, not a production SLA; provider load, network location, warm
+connections, and response length will move them. Streaming the checked response
+writer into TTS is the clearest next latency optimization.
+
 ## Why Pipecat does not own the scheduling context
 
 Pipecat also provides `LLMContext`, context aggregators, system instructions and
@@ -164,11 +183,12 @@ become part of the same history.
 This application has a different boundary. Pipecat completes the spoken turn and
 passes one utterance to `ConversationService`. The service calls a structured
 extractor, validates its proposal, updates the durable patient request, runs policy
-code and returns checked assistant text. There is no general response-generating
-LLM in the Pipecat pipeline. Adding the default context aggregator would therefore
-keep a second transcript-shaped context beside the PostgreSQL conversation and
-typed scheduling request. It would not replace validation or deterministic policy,
-and the two copies could disagree after retries, restarts or non-voice API calls.
+code, and asks a bounded response writer to phrase the checked result. The writer
+is an application service, not a free-running conversational model inside the
+Pipecat pipeline. Adding the default context aggregator would therefore keep a
+second transcript-shaped context beside the PostgreSQL conversation and typed
+scheduling request. It would not replace validation or deterministic policy, and
+the two copies could disagree after retries, restarts or non-voice API calls.
 
 For the same reason, the extraction instruction lives with the extractor rather
 than in Pipecat's `system_instruction`, and the model is not given Pipecat booking
@@ -178,13 +198,16 @@ improve orchestration ergonomics, but it would not make an LLM-selected booking
 action authoritative.
 
 This decision has a cost. I maintain the recent-context window, model-call
-telemetry and tool boundary myself, and I do not automatically receive Pipecat's
-cross-provider message conversion, spoken-response aggregation, context
+telemetry and tool boundary myself, and the two model calls are sequential. I also
+do not automatically receive Pipecat's cross-provider message conversion,
+token-streamed LLM-to-TTS handoff, spoken-response aggregation, context
 summarization or interruption-aware function handling.
 
-I would adopt those features when the voice layer gains a true conversational
-response writer, multiple LLM-driven conversation nodes, or long-running
-informational tools. Pipecat would then own the short-lived spoken conversation:
+If first-audio latency becomes the dominant problem, I would stream the bounded
+response writer through Pipecat and let TTS begin at the first complete sentence.
+I would also adopt more of Pipecat's context features when the voice layer gains
+multiple LLM-driven conversation nodes or long-running informational tools.
+Pipecat would then own the short-lived spoken conversation:
 the system prompt would use the LLM service's `system_instruction`, aggregators
 would record what the patient said and what TTS actually spoke, and registered
 functions would delegate to the existing checked application services. The typed
@@ -265,7 +288,7 @@ filtering, weak ambiguous-name handling, inconsistent yes/no behavior, irrelevan
 questions, and unstable blocker codes. I converted those patterns into catalog
 aliases, engine ordering rules, validation rules, pending-offer behavior, and
 meaning-based grader comparisons. The final regression run passes all 40 cases.
-The current backend suite runs 70 tests: 68 pass and 2 PostgreSQL integration
+The current backend suite runs 88 tests: 86 pass and 2 PostgreSQL integration
 tests are skipped unless a test database URL is supplied.
 
 This is a regression suite, not a claim of perfect real-world accuracy. Only the

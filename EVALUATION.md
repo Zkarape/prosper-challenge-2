@@ -153,10 +153,12 @@ order by created_at desc;
 
 ## Current stage coverage
 
-`EXTRACTION` is currently the only LLM stage. Assistant responses are authored by
-the deterministic scheduling service, so the system does not invent a
-`RESPONSE_WRITING` model call. When another model-backed stage is added, it records
-another `UsageEvent` under the same conversation and turn.
+Production turns can contain two measured LLM stages. `EXTRACTION` proposes a
+typed state change. After validation and deterministic scheduling,
+`RESPONSE_WRITING` phrases the checked response plan for the patient. Each real
+provider call records a separate `UsageEvent` under the same conversation and
+turn. If response writing is disabled or fails, the checked deterministic wording
+is used and no model usage is invented.
 
 ## Cost snapshot
 

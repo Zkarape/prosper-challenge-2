@@ -22,6 +22,7 @@ from .availability import MockAvailability, MockBookingService, Slot
 from .catalog import Catalog
 from .engine import SchedulingEngine
 from .extractor import RuleBasedExtractor
+from .response_writer import OpenAIResponseWriter, safe_spoken_response
 from .state import PreferencePriority, Requirement, SchedulingRequest, TimePreference
 from .storage import (
     InMemoryConversationStore,
@@ -70,6 +71,7 @@ class ConversationService:
         availability: Any | None = None,
         booking_service: Any | None = None,
         usage_ledger: UsageLedger | None = None,
+        response_writer: Any | None = None,
     ):
         self.catalog = catalog
         self.engine = SchedulingEngine(catalog)
@@ -86,6 +88,7 @@ class ConversationService:
             else MockBookingService(self.availability)
         )
         self.usage_ledger = usage_ledger or UsageLedger(self.store.record_usage_event)
+        self.response_writer = response_writer
         self.today_provider = today_provider
         # Kept for compatibility with existing local debugging code. Production
         # code goes through the store and never relies on this process-local dict.
@@ -98,14 +101,21 @@ class ConversationService:
         mode = os.getenv("EXTRACTOR_MODE", "auto").casefold()
         if mode == "openai" or (mode == "auto" and os.getenv("OPENAI_API_KEY")):
             extractor = OpenAIExtractor()
+            response_writer = OpenAIResponseWriter(client=extractor.client)
         else:
             extractor = RuleBasedExtractor(catalog)
+            response_writer = None
         store = postgres_store_from_environment(catalog) or InMemoryConversationStore()
         store.sync_configuration(
             catalog=catalog,
             agent_config=load_default_agent_config(),
         )
-        return cls(catalog, extractor=extractor, store=store)
+        return cls(
+            catalog,
+            extractor=extractor,
+            response_writer=response_writer,
+            store=store,
+        )
 
     @property
     def extractor_mode(self) -> str:
@@ -114,6 +124,10 @@ class ConversationService:
     @property
     def storage_mode(self) -> str:
         return "postgresql" if self.store.durable else "memory"
+
+    @property
+    def response_writer_mode(self) -> str:
+        return getattr(self.response_writer, "mode", "DETERMINISTIC_FALLBACK")
 
     def replace_catalog(self, catalog: Catalog) -> None:
         """Activate a validated catalog for new scheduling work.
@@ -156,6 +170,7 @@ class ConversationService:
             "state": request.to_dict(),
             "pending_offer": None,
             "extractor_mode": self.extractor_mode,
+            "response_writer_mode": self.response_writer_mode,
             "status": conversation.status,
             "started_at": conversation.started_at.isoformat(),
         }
@@ -331,6 +346,7 @@ class ConversationService:
             conversation.pending_offer, clean_utterance
         )
         extraction_result = None
+        response_writing_result = None
         validated = None
         turn_usage_events: list[UsageEvent] = []
         if direct_pending_answer is not None:
@@ -423,7 +439,23 @@ class ConversationService:
                             conversation, trace, validated.patch
                         )
 
+        if self.response_writer is not None:
+            response_writing_result, response_event = self._write_response(
+                conversation,
+                clean_utterance,
+                result,
+                trace,
+                turn_id=message_id,
+            )
+            if response_event is not None:
+                turn_usage_events.append(response_event)
+
         telemetry = extraction_result.telemetry.to_dict() if extraction_result else {}
+        response_telemetry = (
+            vars(response_writing_result.telemetry)
+            if response_writing_result is not None
+            else {}
+        )
         total_input_tokens = sum(item.input_tokens for item in turn_usage_events)
         total_cached_tokens = sum(
             item.cached_input_tokens for item in turn_usage_events
@@ -450,6 +482,7 @@ class ConversationService:
             trace=trace,
             total_latency_ms=elapsed_ms,
             extractor_mode=self.extractor_mode,
+            response_writer_mode=self.response_writer_mode,
             extraction_output=(
                 extraction_result.parsed.model_dump(mode="json")
                 if extraction_result is not None
@@ -467,9 +500,11 @@ class ConversationService:
                 else None
             ),
             extraction_telemetry=telemetry,
+            response_writing_telemetry=response_telemetry,
             usage_events=[item.to_dict() for item in turn_usage_events],
             usage={
-                "model": telemetry.get("model"),
+                "model": telemetry.get("model") or response_telemetry.get("model"),
+                "models": sorted({item.model for item in turn_usage_events}),
                 "model_call_count": len(turn_usage_events),
                 "input_tokens": total_input_tokens,
                 "cached_input_tokens": total_cached_tokens,
@@ -478,6 +513,33 @@ class ConversationService:
                 "estimated_cost_usd": (
                     round(sum(priced_costs), 8) if priced_costs else None
                 ),
+            },
+            latency_breakdown={
+                "extraction_ms": round(
+                    sum(
+                        item.latency_ms
+                        for item in turn_usage_events
+                        if item.stage == "EXTRACTION"
+                    ),
+                    2,
+                ),
+                "response_writing_ms": round(
+                    sum(
+                        item.latency_ms
+                        for item in turn_usage_events
+                        if item.stage == "RESPONSE_WRITING"
+                    ),
+                    2,
+                ),
+                "application_ms": round(
+                    max(
+                        0,
+                        elapsed_ms
+                        - sum(item.latency_ms for item in turn_usage_events),
+                    ),
+                    2,
+                ),
+                "scheduling_total_ms": elapsed_ms,
             },
         )
         conversation.processed_messages[message_id] = result
@@ -508,6 +570,87 @@ class ConversationService:
             output_tokens=total_output_tokens,
         ).info("Scheduling turn completed")
         return result
+
+    def _write_response(
+        self,
+        conversation: Conversation,
+        patient_text: str,
+        result: dict[str, Any],
+        trace: list[dict[str, Any]],
+        *,
+        turn_id: str,
+    ) -> tuple[Any | None, UsageEvent | None]:
+        """Let the LLM phrase a checked plan, with deterministic fallback."""
+
+        started = perf_counter()
+        draft = str(result.get("assistant_message") or "").strip()
+        try:
+            written = self.response_writer.write(
+                patient_text=patient_text,
+                deterministic_draft=draft,
+                engine_result=result.get("engine_result") or {},
+                pending_offer=(
+                    conversation.pending_offer.to_dict(include_values=False)
+                    if conversation.pending_offer
+                    else None
+                ),
+                booking=result.get("booking"),
+                recent_context=self._conversation_history(conversation),
+            )
+            event = UsageEvent.from_telemetry(
+                conversation_id=conversation.patient_request.conversation_id,
+                turn_id=turn_id,
+                stage="RESPONSE_WRITING",
+                telemetry=written.telemetry,
+            )
+            self.usage_ledger.record_call(event)
+            generated = safe_spoken_response(
+                written.text,
+                deterministic_draft=draft,
+                booking_confirmed=bool(
+                    result.get("booking")
+                    and result["booking"].get("status") == "confirmed"
+                ),
+            )
+            if generated is None:
+                self._trace(
+                    trace,
+                    "Respond",
+                    started,
+                    "Generated wording rejected",
+                    "The checked deterministic response was used instead",
+                    "warning",
+                    {"writer_mode": self.response_writer_mode},
+                )
+            else:
+                result["assistant_message"] = generated
+                self._trace(
+                    trace,
+                    "Respond",
+                    started,
+                    "Spoken response generated",
+                    "The LLM phrased the checked response plan",
+                    "success",
+                    {"writer_mode": self.response_writer_mode},
+                )
+            return written, event
+        except Exception as exc:
+            service_logger.bind(
+                event="response_writing_failed",
+                conversation_id=conversation.patient_request.conversation_id,
+                turn_id=turn_id,
+                exception_type=type(exc).__name__,
+            ).exception("Response writing failed; using checked fallback")
+            self._trace(
+                trace,
+                "Respond",
+                started,
+                "Response writer unavailable",
+                "The checked deterministic response was used instead",
+                "warning",
+                {"exception_type": type(exc).__name__},
+            )
+            return None, None
 
     def _extract_and_validate(
         self,

@@ -9,12 +9,18 @@ Voice AI for healthcare scheduling with an embedded live-call tester, observatio
 browser mic -> Pipecat WebRTC -> ElevenLabs STT fragments
     -> local VAD + semantic turn detection -> completed patient turn
     -> structured LLM extraction -> deterministic scheduler
-    -> checked response -> ElevenLabs TTS -> browser audio
+    -> checked response plan -> LLM response writer
+    -> ElevenLabs TTS -> browser audio
 ```
 
 The live call is rendered inside Prosper Agent Studio. The user is never redirected to Pipecat's prebuilt client.
 
-Voice and text now use the same `ConversationService`. The LLM reports only patient-stated facts; application code applies defaults, resolves the catalog, checks policy and availability, owns pending offers, and confirms a booking only after the mock booking system succeeds.
+Voice and text use the same `ConversationService`. The extraction LLM reports only
+patient-stated facts; application code applies defaults, resolves the catalog,
+checks policy and availability, owns pending offers, and confirms a booking only
+after the mock booking system succeeds. A separate response-writing LLM turns the
+checked result into natural patient-facing text. That exact text is shown in the
+conversation and pronounced by ElevenLabs.
 
 The **Agent graph** tab is a real workflow editor backed by
 `backend/example_flow.json`: nodes can be added, positioned, configured, connected,
@@ -54,8 +60,8 @@ multi-worker booking, follow [SCALING.md](SCALING.md) to start PostgreSQL and se
 `DATABASE_URL`.
 
 Conversation-level token, cost, latency and outcome evaluation is documented in
-[EVALUATION.md](EVALUATION.md). The ledger records every actual model call and does
-not fabricate usage for deterministic response writing.
+[EVALUATION.md](EVALUATION.md). The ledger records both extraction and response-
+writing calls under the same conversation and turn.
 
 ## Scheduling API
 
@@ -68,7 +74,11 @@ make api
 
 The text API remains available at `http://127.0.0.1:8000` for automated tests and direct API debugging. The product UI connects directly to the Pipecat runner at `http://127.0.0.1:7860`; it never opens another page or window.
 
-`EXTRACTOR_MODE=auto` uses OpenAI Structured Outputs when `OPENAI_API_KEY` is available and the local structured fallback otherwise. The default extraction model is configured by `EXTRACTION_MODEL`.
+`EXTRACTOR_MODE=auto` uses OpenAI Structured Outputs when `OPENAI_API_KEY` is
+available and the local structured fallback otherwise. The extraction model is
+configured by `EXTRACTION_MODEL`; `RESPONSE_MODEL` controls the model that phrases
+the checked response. When OpenAI is unavailable, the checked deterministic text
+remains a safe fallback.
 
 ## Large-catalog retrieval demo
 
@@ -93,7 +103,7 @@ The same operations are available through `POST /api/catalog/upload` and
 | `backend/observability.py` | Structured logging, correlation fields, secret redaction, rotated JSONL sinks, and local log inspection. |
 | `frontend/app/voice-call-panel.tsx` | Embedded call controls, microphone connection, browser audio, and live patient/assistant transcript. |
 | `backend/extraction/` | Strict Pydantic extraction schema, prompt, OpenAI Responses adapter, telemetry, and semantic validator. |
-| `backend/scheduling/` | Patient request reducer, content-hashed catalog resolution, deterministic rules, availability, booking, and shared turn service. |
+| `backend/scheduling/` | Patient request reducer, content-hashed catalog resolution, deterministic rules, availability, booking, checked response writer, and shared turn service. |
 | `backend/conversation/` | Server-owned pending offers and option IDs used for selections and confirmation. |
 | `backend/agent_builder/` | All agent-building code. `schema.py` = the declarative `AgentConfig` / `Node` / `Edge` contract; `builder.py` = `AgentBuilder`, which loads + validates the JSON and compiles it into a Pipecat Flows graph. |
 | `backend/example_flow.json` | The example agent **as data** — a clinic scheduler. The starting point for the Phase 2 context-management work. |
