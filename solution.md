@@ -43,9 +43,9 @@ patient has stopped speaking. Only the completed utterance enters the scheduling
 system. Interim words may appear while the patient speaks, but they cannot change
 the saved request.
 
-Next, the extractor receives only three useful pieces of context: the latest
-utterance, the current structured patient request, and the current pending offer,
-if one exists. It does not receive the full conversation, clinic catalog, or policy
+Next, the extractor receives the latest utterance, the current structured patient
+request, the current pending offer if one exists, and one recent patient/assistant
+exchange. It does not receive the full conversation, clinic catalog, or policy
 list. OpenAI Structured Outputs turns the sentence into a typed proposal such as
 `patient_status = NEW`, `appointment_type = "knee MRI"`, and
 `time = EARLIEST_AVAILABLE`. Each changed fact includes evidence from the latest
@@ -97,25 +97,29 @@ candidate retrieval to indexed PostgreSQL queries or a search service. That woul
 change how candidate IDs are found, but not the trust boundary: deterministic code
 would still verify every relationship and policy before scheduling.
 
-## The patient request is the context
+## The patient request is the primary context
 
-I chose a compact, typed patient request instead of replaying the full transcript
-on every turn. It remembers the current goal, patient and referral status, raw
-appointment wording, provider and location requirements, and time preference.
-Corrections are explicit operations: set, replace, clear, or keep.
+I chose a compact, typed patient request plus one recent exchange instead of
+replaying the full transcript on every turn. The request remembers the current
+goal, patient and referral status, raw appointment wording, provider and location
+requirements, and time preference. Corrections are explicit operations: set,
+replace, clear, or keep.
 
-This means context grows with the number of useful scheduling facts, not with the
-length of the call. The only conversational reference that normally needs to be
-carried forward is the current server-authored offer. It also makes the logic
-portable: voice calls, text API requests, and evaluation cases all call the same
+This keeps prompt growth bounded by useful scheduling facts and one exchange,
+rather than the full length of the call. The server-authored pending offer gives
+short answers such as “yes” a precise meaning. It also makes the logic portable:
+voice calls, text API requests, and evaluation cases all call the same
 `ConversationService` instead of maintaining separate versions of the scheduling
 behavior.
 
-The trade-off is that a compact request can lose conversational nuance. I handle
-the highest-risk references directly through pending offers, preserve raw patient
-phrasing, and ask for clarification when a reference cannot be grounded. A future
-version could add a small, bounded recent-turn window for unresolved pronouns
-without restoring the full transcript on every model call.
+The trade-off is measurable but not settled. In the final repeated run, bounded
+recent context used 3.39% fewer input tokens than full history and both passed
+13/15 trials. State alone used 8.31% fewer input tokens and passed 15/15, but it
+failed cases in the preceding runs. Prompt caching also meant fewer input tokens
+did not produce lower estimated cost every time. I keep the bounded middle option
+as a provisional safety margin for short references. The experiment proves token
+reduction for these calls; five draft conversations are not enough to prove
+universal accuracy or cost savings.
 
 ## The deterministic engine
 
@@ -147,6 +151,46 @@ or transcript frames, while patient turns still remain ordered.
 
 Voice is an adapter around the scheduling core. Replacing WebRTC, STT, or TTS does
 not require rewriting extraction, policy, availability, or booking logic.
+
+## Why Pipecat does not own the scheduling context
+
+Pipecat also provides `LLMContext`, context aggregators, system instructions and
+function calling. I deliberately do not use its default context loop in the
+current runtime. That loop is designed for a conversational LLM placed directly
+inside the Pipecat pipeline: transcriptions are appended as user messages, model
+output is appended as assistant messages, and function calls and their results
+become part of the same history.
+
+This application has a different boundary. Pipecat completes the spoken turn and
+passes one utterance to `ConversationService`. The service calls a structured
+extractor, validates its proposal, updates the durable patient request, runs policy
+code and returns checked assistant text. There is no general response-generating
+LLM in the Pipecat pipeline. Adding the default context aggregator would therefore
+keep a second transcript-shaped context beside the PostgreSQL conversation and
+typed scheduling request. It would not replace validation or deterministic policy,
+and the two copies could disagree after retries, restarts or non-voice API calls.
+
+For the same reason, the extraction instruction lives with the extractor rather
+than in Pipecat's `system_instruction`, and the model is not given Pipecat booking
+functions to choose from. Booking is an application decision reached only after
+eligibility, availability and pending-offer checks. Pipecat function calling would
+improve orchestration ergonomics, but it would not make an LLM-selected booking
+action authoritative.
+
+This decision has a cost. I maintain the recent-context window, model-call
+telemetry and tool boundary myself, and I do not automatically receive Pipecat's
+cross-provider message conversion, spoken-response aggregation, context
+summarization or interruption-aware function handling.
+
+I would adopt those features when the voice layer gains a true conversational
+response writer, multiple LLM-driven conversation nodes, or long-running
+informational tools. Pipecat would then own the short-lived spoken conversation:
+the system prompt would use the LLM service's `system_instruction`, aggregators
+would record what the patient said and what TTS actually spoke, and registered
+functions would delegate to the existing checked application services. The typed
+patient request and PostgreSQL records would remain the durable source of truth.
+In other words, Pipecat context can become the conversational layer without
+becoming the clinic policy engine.
 
 ## Agent graph and studio
 

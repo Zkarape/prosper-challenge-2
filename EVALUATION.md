@@ -54,6 +54,54 @@ The unit of efficiency is a completed conversation, not an individual request.
 Failed and abandoned conversations remain in the token numerator because they
 still consumed model calls.
 
+## Context strategy comparison
+
+The Evaluations page also contains a paired experiment for the extractor. It runs
+the same five multi-turn conversations with the same model, initial state, schema,
+catalog and deterministic engine. Only the history window changes:
+
+1. `compact` sends the latest utterance, structured request and pending offer.
+2. `bounded_recent` adds the last patient/assistant exchange.
+3. `full_history` adds every prior patient and assistant message.
+
+Each conversation is repeated three times. Tokens come from the provider response;
+local token estimates cannot produce a proof run. Accuracy is graded from the final
+typed request, engine decision, next action and booking status. Failed trials stay
+in the token totals. The runner also reports a 95% Wilson interval and a paired
+exact p-value so a small sample cannot masquerade as statistical certainty.
+
+The final-code run `context_eval_c079bf2575a5` on `gpt-5.4-mini` measured:
+
+| Strategy | Passed trials | Input tokens | Total tokens | Estimated cost |
+| --- | ---: | ---: | ---: | ---: |
+| State only | 15/15 | 158,891 | 173,981 | $0.15960 |
+| Recent exchange | 13/15 | 167,419 | 182,910 | $0.17246 |
+| Full history | 13/15 | 173,288 | 188,658 | $0.16889 |
+
+Against full history, the selected recent-exchange strategy used 5,869 fewer input
+tokens (3.39%) and 5,748 fewer total tokens (3.05%), with the same observed 13/15
+accuracy. This proves token reduction for this run. It does not prove lower cost:
+different cached-token totals made recent context about $0.0036 more expensive.
+State only used 8.31% fewer input tokens than full history and passed 15/15 in this
+run, but it failed trials in both preceding repeated runs.
+
+The honest result is that full history costs more input tokens without showing an
+accuracy advantage here. The benchmark is too small and variable to prove that
+either compact alternative preserves accuracy universally. Bounded recent context
+remains the conservative production default because it retains short references
+at a fixed cost, but that choice is provisional. The next evidence step is a
+larger, independently reviewed set of long conversations and production traces.
+Cost comparisons must also be repeated because provider prompt caching varies.
+
+The comparison API is:
+
+```text
+GET  /api/evaluations/context-comparison/dataset
+POST /api/evaluations/context-comparison/runs
+GET  /api/evaluations/context-comparison/runs/latest
+GET  /api/evaluations/context-comparison/runs/{run_id}
+```
+
 ## Where to inspect the data
 
 In Supabase, open **Table Editor**:

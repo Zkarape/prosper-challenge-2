@@ -30,5 +30,30 @@
 - Validation: 40/40.
 - State: 40/40.
 - Engine: 40/40.
-- Backend: 62 passed, 2 skipped, 0 failed.
+- Backend: 81 passed, 2 skipped, 0 failed.
 - Frontend: build passed; 2/2 tests passed.
+
+## Context trade-off experiment
+
+The first repeated live run rejected the original state-only claim: it saved
+tokens, but passed 13/15 trials. Recent context passed 14/15 and full history
+passed 9/15. The failures exposed two validation gaps: unrelated wording could
+clear patient status, and explicit “any doctor/location” corrections relied on
+the model choosing the exact patch operation.
+
+After grounding status changes and moving explicit no-preference language into
+deterministic validation, `context_eval_b4dad45befaf` produced:
+
+- state only: 14/15;
+- state plus the last exchange: 15/15;
+- full history: 12/15;
+- selected versus full: 8.86% fewer input tokens and 8.44% fewer total tokens.
+
+The final-code run `context_eval_c079bf2575a5` then produced 15/15 for state only,
+13/15 for recent context and 13/15 for full history. Recent context used 3.39%
+fewer input tokens than full history, but caching made it slightly more expensive.
+
+Decision: keep bounded recent context as a provisional safety margin for short
+references. Claim measured input-token reduction, not proven lower cost or proven
+accuracy non-inferiority. The changing results are evidence that the next step is
+a larger human-reviewed benchmark, not more tuning against these five scenarios.

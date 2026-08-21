@@ -56,5 +56,3 @@ We highly encourage you to use AI tools (Claude Code, Cursor, etc.) to help with
 ## Submission
 
 Submit a link to a repository containing your code and a `solution.md` file with an overview of your solution and the key architectural decisions you made.
-
-![image.png](AI%20Software%20Engineer%20Challenge/image.png)
